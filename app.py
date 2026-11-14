@@ -476,35 +476,6 @@ def a_participant_del(pid):
     log("participant_deleted", p["email"]); return jsonify(ok=True)
 
 
-# ---------- AI assistant (Groq) ----------
-GROQ_KEY = os.getenv("GROQ_API_KEY", ""); GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-AI_USE = {}
-
-@app.post("/api/ai")
-@need()
-def api_ai():
-    if not GROQ_KEY: return jsonify(error="AI is not configured yet (GROQ_API_KEY missing on the server)"), 503
-    ip = client_ip(); t = time.time(); AI_USE[ip] = [x for x in AI_USE.get(ip, []) if t - x < 60]
-    if len(AI_USE[ip]) >= 10: return jsonify(error="Too many questions. Wait a minute."), 429
-    AI_USE[ip].append(t)
-    msgs = [m for m in ((request.get_json(silent=True) or {}).get("messages") or [])[-10:]
-            if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)]
-    if not msgs: return jsonify(error="Ask something"), 400
-    c = course()["course"]
-    sysmsg = ("You are the study assistant for the course '%s' (%s). Help participants understand AI, law, justice and "
-              "forensics topics from this course in clear, simple language. Do not give legal advice for real cases." % (c.get("title"), c.get("subtitle")))
-    import requests
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions", timeout=60,
-                          headers={"Authorization": "Bearer " + GROQ_KEY, "Content-Type": "application/json"},
-                          json={"model": GROQ_MODEL, "max_tokens": 700, "messages": [{"role": "system", "content": sysmsg}] +
-                                [{"role": m["role"], "content": m["content"][:2000]} for m in msgs]})
-        if r.status_code >= 300: return jsonify(error="AI service error (%d)" % r.status_code), 502
-        log("ai_question", msgs[-1]["content"][:80])
-        return jsonify(reply=r.json()["choices"][0]["message"]["content"])
-    except Exception: return jsonify(error="AI service not reachable"), 502
-
-
 # ---------- admin overview, visitors ----------
 def cnt(sql, a=()): return db().execute(sql, a).fetchone()["n"]
 
