@@ -243,10 +243,10 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
   }catch(err){notice(String(err))}});
 
 (async function boot(){
-  try{const me=await api('/api/me');if(!me.user){location='/login';return}
+  try{const B=window.__BOOT__||{};const me=B.me||await api('/api/me');if(!me.user){location='/login';return}
     user=me.user;if(!isStaff())MAIN_TABS.push(['checkin','Mark attendance']);CFG.categories=me.categories;CFG.max_mb=me.max_mb;
-    const [c,fd,st,files,ann,custom]=await Promise.all([api('/api/content'),api('/api/foundation'),api('/api/settings'),api('/api/files'),api('/api/announcements').catch(()=>[]),api('/api/laws/custom').catch(()=>[])]);
-    DATA=c;BASE_LAWS=(c.laws||[]).slice();mergeLaws(custom);ANN=ann;FOUNDATIONS=fd;Object.assign(CFG,st);FILES=files;applyOverrides();if(isAdmin()){try{PART=await api('/api/admin/participants');PENDING=PART.filter(p=>p.status==='pending').length}catch{}}
+    const [c,fd,st,files,ann,custom]=await Promise.all([B.content||api('/api/content'),B.foundation||api('/api/foundation'),B.settings||api('/api/settings'),B.files||api('/api/files'),B.ann||api('/api/announcements').catch(()=>[]),B.custom||api('/api/laws/custom').catch(()=>[])]);
+    DATA=c;BASE_LAWS=(c.laws||[]).slice();mergeLaws(custom);ANN=ann;FOUNDATIONS=fd;Object.assign(CFG,st);FILES=files;applyOverrides();if(isAdmin()){try{PART=B.part||await api('/api/admin/participants');PENDING=PART.filter(p=>p.status==='pending').length}catch{}}
     window.addEventListener('hashchange',readHash);readHash()}
   catch(err){$('main').innerHTML=`<div class="empty">Could not load the portal. ${e(err)}</div>`}
 })();
