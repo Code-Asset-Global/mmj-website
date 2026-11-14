@@ -38,6 +38,17 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
 
 
 # ---------- database (Postgres or SQLite behind one tiny wrapper) ----------
+_VER = [0]      # bumped by every commit (except visit/log writes), invalidating the read cache below
+_MEMO = {}
+
+
+def memo(key, fn, ttl=30):
+    """Cache a DB read in memory. Saves a network round trip to the remote database on each request."""
+    h, t, v0 = _MEMO.get(key), time.time(), _VER[0]
+    if h and h[0] == v0 and t - h[1] < ttl: return h[2]
+    v = fn(); _MEMO[key] = (v0, t, v); return v
+
+
 import threading
 _tl = threading.local()  # one reusable Postgres connection per worker thread (opening a new one per request is slow)
 
@@ -77,7 +88,9 @@ class Conn:
             _tl.c = None; self.c = _pg_connect()  # idle connection was dropped by the server: reconnect once
             return self.c.execute(sql, args)
 
-    def commit(self): self.c.commit()
+    def commit(self, bump=True):
+        self.c.commit()
+        if bump: _VER[0] += 1
 
     def close(self):
         if PG:
@@ -186,8 +199,8 @@ def init():
 
 
 def setting(k, default=None):
-    r = db().execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
-    return r["v"] if r else default
+    v = memo(("s", k), lambda: (lambda r: r["v"] if r else None)(db().execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()))
+    return v if v is not None else default
 
 
 def jsetting(k, default):
@@ -212,13 +225,14 @@ def inject():
 def log(action, detail="", user=None):
     db().execute("INSERT INTO logs(ts,username,action,detail,ip) VALUES(?,?,?,?,?)",
                  (now(), user or session.get("u", "-"), action, detail, request.remote_addr))
-    db().commit()
+    db().commit(bump=False)
 
 
 # ---------- auth ----------
 def me():
     if "u" not in session: return None
-    r = db().execute("SELECT username,role,name,active FROM users WHERE username=?", (session["u"],)).fetchone()
+    r = memo(("me", session["u"]), lambda: (lambda x: dict(x) if x else None)(
+        db().execute("SELECT username,role,name,active FROM users WHERE username=?", (session["u"],)).fetchone()))
     return r if r and r["active"] else None
 
 
@@ -269,20 +283,55 @@ def speed(resp):
 
 
 # ---------- pages ----------
+import queue
+_visitq, _SEEN, _vw = queue.Queue(), set(), []
+
+
+def _visit_worker():
+    while True:
+        day, vid, path = _visitq.get()
+        try:
+            c = Conn()
+            if not c.execute("SELECT 1 AS x FROM visits WHERE day=? AND vid=? AND path=?", (day, vid, path)).fetchone():
+                c.execute("INSERT INTO visits(day,vid,path,ts) VALUES(?,?,?,?)", (day, vid, path, now())); c.commit(bump=False)
+            c.close()
+        except Exception: pass
+
+
 def track(path):
+    """Count a visit in the background so the page does not wait for the database."""
     try:
         vid = __import__("hashlib").sha256((client_ip() + request.headers.get("User-Agent", "")).encode()).hexdigest()[:16]
-        day = now()[:10]
-        if not db().execute("SELECT 1 AS x FROM visits WHERE day=? AND vid=? AND path=?", (day, vid, path)).fetchone():
-            db().execute("INSERT INTO visits(day,vid,path,ts) VALUES(?,?,?,?)", (day, vid, path, now())); db().commit()
+        key = (now()[:10], vid, path)
+        if key in _SEEN: return
+        if len(_SEEN) > 50000: _SEEN.clear()
+        _SEEN.add(key)
+        if not _vw:
+            _vw.append(threading.Thread(target=_visit_worker, daemon=True, name="visits")); _vw[0].start()
+        _visitq.put(key)
     except Exception: pass
+
+
+def boot_json(u):
+    """Everything the portal needs on first paint, embedded in the HTML so no extra API calls are needed."""
+    vf = app.view_functions
+    def get(name):
+        try:
+            r = vf[name](); r = r[0] if isinstance(r, tuple) else r
+            return r.get_json() if getattr(r, "status_code", 200) == 200 else None
+        except Exception: return None
+    b = {"me": get("api_me"), "content": get("api_content"), "foundation": get("api_foundation"), "settings": get("api_settings"),
+         "files": get("api_files"), "ann": get("ann_list"), "custom": get("laws_list")}
+    if u["role"] == "admin": b["part"] = get("a_participants")
+    return json.dumps(b, ensure_ascii=False).replace("<", "\\u003c")
 
 
 @app.route("/")
 def home():
     track("/")
     u = me()
-    return render_template("portal.html", role=u["role"]) if u else redirect("/login")
+    if not u: return redirect("/login")
+    return render_template("portal.html", role=u["role"], boot=boot_json(u))
 
 @app.route("/healthz")
 def healthz(): return "ok"
@@ -310,8 +359,8 @@ def logo(n):
     name = setting("logo%d" % n)
     if name:
         it, ct, _, _ = store_get(name)
-        return Response(it, mimetype=ct, headers={"Cache-Control": "public, max-age=300"})
-    return send_from_directory(os.path.join(BASE, "static"), "logo%d.jpg" % n)
+        return Response(it, mimetype=ct, headers={"Cache-Control": "public, max-age=86400"})
+    return send_from_directory(os.path.join(BASE, "static"), "logo%d.jpg" % n, max_age=86400)
 
 
 @app.errorhandler(413)
@@ -425,8 +474,7 @@ def api_asset(key):
 @app.get("/api/files")
 @need()
 def api_files():
-    rows = db().execute("SELECT id,title,category,session_no,orig_name,size,uploaded_by,created FROM files ORDER BY id DESC").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(memo("files", lambda: [dict(r) for r in db().execute("SELECT id,title,category,session_no,orig_name,size,uploaded_by,created FROM files ORDER BY id DESC").fetchall()]))
 
 @app.post("/api/files")
 @need("admin", "faculty")
@@ -582,8 +630,7 @@ def a_participant_del(pid):
 @app.get("/api/announcements")
 @need()
 def ann_list():
-    rows = db().execute("SELECT id,title,body,orig_name,size,posted_by,created FROM announcements ORDER BY id DESC LIMIT 100").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(memo("ann", lambda: [dict(r) for r in db().execute("SELECT id,title,body,orig_name,size,posted_by,created FROM announcements ORDER BY id DESC LIMIT 100").fetchall()]))
 
 @app.post("/api/announcements")
 @need("admin", "faculty")
@@ -641,7 +688,7 @@ def law_json(r):
 @app.get("/api/laws/custom")
 @need()
 def laws_list():
-    return jsonify([law_json(r) for r in db().execute("SELECT * FROM law_entries ORDER BY id DESC LIMIT 500").fetchall()])
+    return jsonify(memo("laws", lambda: [law_json(r) for r in db().execute("SELECT * FROM law_entries ORDER BY id DESC LIMIT 500").fetchall()]))
 
 @app.post("/api/laws/custom")
 @need("admin", "faculty")
