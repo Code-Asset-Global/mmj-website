@@ -131,7 +131,7 @@ document.addEventListener('click',async ev=>{const el=ev.target.closest('[data-a
 document.addEventListener('submit',async ev=>{if(ev.target.id!=='p-add'||!isAdmin())return;ev.preventDefault();const f=ev.target,d=Object.fromEntries(new FormData(f));
   try{const r=await api('/api/admin/participants',{method:'POST',json:d});f.reset();await loadParts();CREDS={name:d.name,email:d.email,username:r.username,password:r.password};$('creds').innerHTML=credsBox()}catch(err){notice(String(err))}});
 
-const VIEWS={dashboard,attendance,report,checkin,ai,participants,overview,sessions,primer,tracker,assignments,library,about,upload,users,activity,branding};
+const VIEWS={dashboard,attendance,report,checkin,participants,overview,sessions,primer,tracker,assignments,library,about,upload,users,activity,branding};
 function render(){const tabs=allTabs(),st=staffTabs();
   $('userchip').innerHTML=`<span class="who">${e(user.name)} · ${ROLE_LABEL[user.role]}</span>${button('logout','Sign out','','button secondary small')}`;
   const mk=(t,i)=>`<button data-action="navigate" data-view="${t[0]}" ${state.view===t[0]?'aria-current="page"':''}><span class="nav-num">${String(i+1).padStart(2,'0')}</span>${t[1]}${t[0]==='sessions'?'<span class="nav-count">14</span>':''}${t[0]==='participants'&&PENDING?`<span class="nav-count">${PENDING}</span>`:''}</button>`;
@@ -174,7 +174,7 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
 
 /* ---- dashboard, attendance, check-in, AI (added) ---- */
 const today=()=>{const d=new Date();return new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)};
-let attDay=today(),ATT=null,REP=null,AIH=[];
+let attDay=today(),ATT=null,REP=null;
 function dashboard(){return `${heading('ADMIN · LIVE NUMBERS','Dashboard','Visitors, sign-ups and attendance for the course website.')}<div id="pane-body"><div class="empty">Loading…</div></div>`}
 async function loadDash(){const d=await api('/api/admin/overview'),mx=Math.max(1,...d.series.map(x=>x.visitors));
   const st=a=>`<div class="stats">${a.map(([k,v],i)=>`<div class="stat"><span>${k.toUpperCase()}</span><strong>${v}</strong></div>`).join('')}</div>`;
@@ -186,7 +186,6 @@ async function loadAtt(){const d=ATT=await api('/api/attendance?day='+attDay);
 function report(){return `${heading(isAdmin()?'ADMIN · ATTENDANCE':'FACULTY · ATTENDANCE','Attendance report','Days present for every approved participant.','<button class="button secondary" data-action="rep-csv">Export CSV</button>')}<div id="pane-body"><div class="empty">Loading…</div></div>`}
 async function loadRep(){const d=REP=await api('/api/attendance/report');$('pane-body').innerHTML=`<p class="muted">${d.days.length} class day${d.days.length===1?'':'s'} recorded</p><div class="table-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Present</th>${d.days.map(x=>`<th>${e(x.slice(5))}</th>`).join('')}</tr></thead><tbody>${d.rows.map(r=>`<tr><td><b>${e(r.name)}</b></td><td>${e(r.email)}</td><td><b>${r.present}/${d.days.length}</b></td>${d.days.map(x=>`<td>${r.marks[x]?'✓':'–'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
 function checkin(){return `${heading('DAILY ATTENDANCE','Mark attendance','Enter your registered email and the 4-digit code your faculty shows in class.')}<section class="panel" style="max-width:520px"><form id="checkin-form" class="assignment-form"><label>Registered email<input name="email" type="email" required placeholder="you@example.com"></label><label>Today's code<input name="code" inputmode="numeric" maxlength="4" required placeholder="0000"></label><button class="button" type="submit">Mark me present</button><p class="fine" id="ci-msg"></p></form></section>`}
-function ai(){return `${heading('POWERED BY GROQ','AI Study Assistant','Ask about topics from the course. A learning aid, not legal advice.')}<div class="chat" id="chat"><div class="m">Hello! Ask me anything about AI, law and justice from the course.</div></div><form id="ai-form" class="actions"><input class="search" style="flex:1" name="q" placeholder="Type your question" autocomplete="off"><button class="button" type="submit">Send</button></form>`}
 document.addEventListener('click',async ev=>{const el=ev.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
   try{
   if(a==='att-mark'){const c=el.parentElement;c.querySelectorAll('button').forEach(b=>b.className='button small secondary');el.className='button small on'+(el.dataset.s==='absent'?' a':'')}
@@ -201,12 +200,11 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
   try{
   if(f.id==='user-form'&&isAdmin()){ev.preventDefault();const r=await api('/api/admin/users',{method:'POST',json:Object.fromEntries(new FormData(f))});f.reset();$('newid').innerHTML=`<div class="info" style="margin-top:16px">New ID created. Copy it now, the password is not shown again:<br><b>User ID:</b> ${e(r.username)} &nbsp; <b>Password:</b> ${e(r.password)}</div>`;loadUsers()}
   else if(f.id==='checkin-form'){ev.preventDefault();const m=$('ci-msg');try{const r=await api('/api/checkin',{method:'POST',json:Object.fromEntries(new FormData(f))});m.style.color='#1b7a43';m.textContent='Thank you, '+r.name+'. You are marked present.';f.reset()}catch(err){m.style.color='#b3372f';m.textContent=String(err)}}
-  else if(f.id==='ai-form'){ev.preventDefault();const q=f.q.value.trim();if(!q)return;f.q.value='';const c=$('chat'),add=(t,k)=>{const d=document.createElement('div');d.className='m '+k;d.textContent=t;c.appendChild(d);c.scrollTop=1e9};add(q,'u');AIH.push({role:'user',content:q});try{const r=await api('/api/ai',{method:'POST',json:{messages:AIH}});AIH.push({role:'assistant',content:r.reply});add(r.reply,'')}catch(err){add(String(err),'err')}}
   }catch(err){notice(String(err))}});
 
 (async function boot(){
   try{const me=await api('/api/me');if(!me.user){location='/login';return}
-    user=me.user;MAIN_TABS.push(['ai','AI Assistant']);if(!isStaff())MAIN_TABS.push(['checkin','Mark attendance']);CFG.categories=me.categories;CFG.max_mb=me.max_mb;
+    user=me.user;if(!isStaff())MAIN_TABS.push(['checkin','Mark attendance']);CFG.categories=me.categories;CFG.max_mb=me.max_mb;
     const [c,fd,st,files]=await Promise.all([api('/api/content'),api('/api/foundation'),api('/api/settings'),api('/api/files')]);
     DATA=c;FOUNDATIONS=fd;Object.assign(CFG,st);FILES=files;applyOverrides();if(isAdmin()){try{PART=await api('/api/admin/participants');PENDING=PART.filter(p=>p.status==='pending').length}catch{}}
     window.addEventListener('hashchange',readHash);readHash()}
