@@ -231,6 +231,8 @@ def log(action, detail="", user=None):
 # ---------- auth ----------
 def me():
     if "u" not in session: return None
+    if session.get("d") != now()[:10]:  # sign-in is valid for the calendar day (IST) only; next day = sign in again
+        session.clear(); return None
     r = memo(("me", session["u"]), lambda: (lambda x: dict(x) if x else None)(
         db().execute("SELECT username,role,name,active FROM users WHERE username=?", (session["u"],)).fetchone()))
     return r if r and r["active"] else None
@@ -360,7 +362,9 @@ def logo(n):
     if name:
         it, ct, _, _ = store_get(name)
         return Response(it, mimetype=ct, headers={"Cache-Control": "public, max-age=86400"})
-    return send_from_directory(os.path.join(BASE, "static"), "logo%d.jpg" % n, max_age=86400)
+    sd = os.path.join(BASE, "static")
+    fn = "logo%d.png" % n if os.path.exists(os.path.join(sd, "logo%d.png" % n)) else "logo%d.jpg" % n  # PNG (lossless) preferred
+    return send_from_directory(sd, fn, max_age=86400)
 
 
 @app.errorhandler(413)
@@ -378,7 +382,7 @@ def api_login():
         FAILS.setdefault(ip, []).append(time.time())
         log("login_failed", str(d.get("username", ""))[:40], user="-")
         return jsonify(error="Wrong ID or password"), 401
-    session.clear(); session.permanent = True; session["u"] = r["username"]; log("login")
+    session.clear(); session.permanent = True; session["u"] = r["username"]; session["d"] = now()[:10]; log("login")
     return jsonify(ok=True, redirect="/")
 
 @app.post("/api/logout")
