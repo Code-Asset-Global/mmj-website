@@ -149,6 +149,11 @@ def init():
               "CREATE TABLE IF NOT EXISTS attendance(id %s, day TEXT, pid INTEGER, status TEXT, via TEXT, marked_by TEXT, ts TEXT, UNIQUE(day,pid))" % idt,
               "CREATE TABLE IF NOT EXISTS participants(id %s, name TEXT, email TEXT, phone TEXT, org TEXT, ref TEXT, status TEXT, username TEXT, created TEXT, note TEXT)" % idt]:
         c.execute(s)
+    try:
+        c.execute("ALTER TABLE files ADD COLUMN description TEXT" if not PG else "ALTER TABLE files ADD COLUMN IF NOT EXISTS description TEXT"); c.commit()
+    except Exception:
+        try: c.c.rollback()
+        except Exception: pass
     ensure_bucket()
     if not c.execute("SELECT 1 AS x FROM users LIMIT 1").fetchone():
         for u, role, name, pw in SEED:
@@ -337,7 +342,7 @@ def api_asset(key):
 @app.get("/api/files")
 @need()
 def api_files():
-    rows = db().execute("SELECT id,title,category,session_no,orig_name,size,uploaded_by,created FROM files ORDER BY id DESC").fetchall()
+    rows = db().execute("SELECT id,title,description,category,session_no,orig_name,size,uploaded_by,created FROM files ORDER BY id DESC").fetchall()
     return jsonify([dict(r) for r in rows])
 
 @app.post("/api/files")
@@ -350,13 +355,25 @@ def api_upload():
     if ext not in ALLOWED: return jsonify(error="File type .%s not allowed" % ext), 400
     if cat not in CATEGORIES: cat = "Other"
     sn = request.form.get("session_no"); sn = int(sn) if sn and sn.isdigit() and 1 <= int(sn) <= 14 else None
+    desc = (request.form.get("description") or "").strip()[:1000]
     data = f.read(); stored = uuid.uuid4().hex + "." + ext
     try: store_put(stored, data, f.mimetype or "application/octet-stream")
     except Exception as e: return jsonify(error=str(e)), 502
     orig = secure_filename(f.filename) or ("file." + ext)
-    db().execute("INSERT INTO files(title,category,session_no,orig_name,stored,size,uploaded_by,created) VALUES(?,?,?,?,?,?,?,?)",
-                 (title or orig, cat, sn, orig, stored, len(data), session["u"], now())); db().commit()
+    db().execute("INSERT INTO files(title,description,category,session_no,orig_name,stored,size,uploaded_by,created) VALUES(?,?,?,?,?,?,?,?,?)",
+                 (title or orig, desc, cat, sn, orig, stored, len(data), session["u"], now())); db().commit()
     log("upload", title or orig); return jsonify(ok=True)
+
+@app.patch("/api/files/<int:fid>")
+@need("admin", "faculty")
+def api_file_edit(fid):
+    r = db().execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+    if not r: abort(404)
+    d = request.get_json(silent=True) or {}
+    title = str(d.get("title", r["title"]) or "").strip()[:160] or r["title"]
+    desc = str(d.get("description", r["description"] or "") or "").strip()[:1000]
+    db().execute("UPDATE files SET title=?, description=? WHERE id=?", (title, desc, fid)); db().commit()
+    log("file_edited", title); return jsonify(ok=True)
 
 @app.get("/api/files/<int:fid>/download")
 @need()
