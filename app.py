@@ -68,7 +68,9 @@ def close_db(_):
     if d: d.close()
 
 
-def now(): return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+from datetime import timezone, timedelta
+IST = timezone(timedelta(hours=5, minutes=30))
+def now(): return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------- file storage (Supabase Storage or local folder) ----------
@@ -127,6 +129,7 @@ def init():
               "CREATE TABLE IF NOT EXISTS files(id %s, title TEXT, category TEXT, session_no INTEGER, orig_name TEXT, stored TEXT, size BIGINT, uploaded_by TEXT, created TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS logs(id %s, ts TEXT, username TEXT, action TEXT, detail TEXT, ip TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)",
+              "CREATE TABLE IF NOT EXISTS announcements(id %s, title TEXT, body TEXT, stored TEXT, orig_name TEXT, size BIGINT, posted_by TEXT, created TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS visits(id %s, day TEXT, vid TEXT, path TEXT, ts TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS attendance(id %s, day TEXT, pid INTEGER, status TEXT, via TEXT, marked_by TEXT, ts TEXT, UNIQUE(day,pid))" % idt,
               "CREATE TABLE IF NOT EXISTS participants(id %s, name TEXT, email TEXT, phone TEXT, org TEXT, ref TEXT, status TEXT, username TEXT, created TEXT, note TEXT)" % idt]:
@@ -476,6 +479,55 @@ def a_participant_del(pid):
     log("participant_deleted", p["email"]); return jsonify(ok=True)
 
 
+# ---------- announcements / posters (admin + faculty post and delete, everyone reads) ----------
+@app.get("/api/announcements")
+@need()
+def ann_list():
+    rows = db().execute("SELECT id,title,body,orig_name,size,posted_by,created FROM announcements ORDER BY id DESC LIMIT 100").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/announcements")
+@need("admin", "faculty")
+def ann_add():
+    title = (request.form.get("title") or "").strip()[:160]; body = (request.form.get("body") or "").strip()[:3000]
+    if not title: return jsonify(error="Please add a title"), 400
+    f = request.files.get("file"); stored = orig = None; size = 0
+    if f and f.filename:
+        ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
+        if ext not in ALLOWED: return jsonify(error="File type .%s not allowed" % ext), 400
+        data = f.read(); stored = "announcements/" + uuid.uuid4().hex + "." + ext
+        try: store_put(stored, data, f.mimetype or "application/octet-stream")
+        except Exception as e: return jsonify(error=str(e)), 502
+        orig = secure_filename(f.filename) or ("file." + ext); size = len(data)
+    db().execute("INSERT INTO announcements(title,body,stored,orig_name,size,posted_by,created) VALUES(?,?,?,?,?,?,?)",
+                 (title, body, stored, orig, size, session["u"], now())); db().commit()
+    log("announcement_posted", title); return jsonify(ok=True)
+
+@app.get("/api/announcements/<int:aid>/file")
+@need()
+def ann_file(aid):
+    r = db().execute("SELECT * FROM announcements WHERE id=?", (aid,)).fetchone()
+    if not r or not r["stored"]: abort(404)
+    ext = r["orig_name"].rsplit(".", 1)[-1].lower() if "." in r["orig_name"] else ""
+    inline = ext in INLINE and not request.args.get("dl")
+    it, _, status, extra = store_get(r["stored"], request.headers.get("Range"))
+    ct = mimetypes.guess_type(r["orig_name"])[0] or "application/octet-stream"
+    return Response(stream_with_context(it), status=status, mimetype=ct, headers={
+        "Content-Disposition": '%s; filename="%s"' % ("inline" if inline else "attachment", r["orig_name"]),
+        "X-Content-Type-Options": "nosniff", "Accept-Ranges": "bytes", **extra})
+
+@app.delete("/api/announcements/<int:aid>")
+@need("admin", "faculty")
+def ann_del(aid):
+    u = me(); r = db().execute("SELECT * FROM announcements WHERE id=?", (aid,)).fetchone()
+    if not r: abort(404)
+    if u["role"] == "faculty" and r["posted_by"] != u["username"]:
+        return jsonify(error="Faculty can delete only their own announcements"), 403
+    if r["stored"]: store_del(r["stored"])
+    db().execute("DELETE FROM announcements WHERE id=?", (aid,)); db().commit(); log("announcement_deleted", r["title"])
+    return jsonify(ok=True)
+
+
 # ---------- admin overview, visitors ----------
 def cnt(sql, a=()): return db().execute(sql, a).fetchone()["n"]
 
@@ -499,6 +551,9 @@ def a_overview():
         approved=cnt("SELECT COUNT(*) AS n FROM participants WHERE status='approved'"),
         logins_today=cnt("SELECT COUNT(*) AS n FROM logs WHERE action='login' AND ts LIKE ?", (today + "%",)),
         present_today=cnt("SELECT COUNT(*) AS n FROM attendance WHERE day=? AND status='present'", (today,)),
+        registered=cnt("SELECT COUNT(*) AS n FROM users WHERE role='participant' AND active=1"),
+        students_today=cnt("SELECT COUNT(DISTINCT username) AS n FROM logs WHERE action='login' AND ts LIKE ? AND username IN (SELECT username FROM users WHERE role='participant')", (today + "%",)),
+        today_logins=[dict(r) for r in db().execute("SELECT l.username AS username, u.name AS name, u.role AS role, MIN(l.ts) AS first_ts, COUNT(*) AS n FROM logs l LEFT JOIN users u ON u.username=l.username WHERE l.action='login' AND l.ts LIKE ? GROUP BY l.username, u.name, u.role ORDER BY first_ts DESC", (today + "%",)).fetchall()],
         attendance_rate=att_rate(),
         series=series)
 
@@ -567,7 +622,7 @@ def a_approve_shared(pid):
     log("participant_approved_shared", str(pid)); return jsonify(ok=True)
 
 @app.post("/api/admin/participants/bulk")
-@need("admin")
+@need("admin", "faculty")
 def a_bulk():
     n = 0
     for line in str((request.get_json(silent=True) or {}).get("text", "")).splitlines():
