@@ -38,22 +38,53 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
 
 
 # ---------- database (Postgres or SQLite behind one tiny wrapper) ----------
+import threading
+_tl = threading.local()  # one reusable Postgres connection per worker thread (opening a new one per request is slow)
+
+
+def _pg_connect():
+    import psycopg
+    from psycopg.rows import dict_row
+    c = getattr(_tl, "c", None)
+    if c is None or c.closed:
+        c = psycopg.connect(DATABASE_URL, row_factory=dict_row, prepare_threshold=None, connect_timeout=15)
+        _tl.c = c
+    return c
+
+
 class Conn:
     def __init__(self):
+        self.n = 0
         if PG:
-            import psycopg
-            from psycopg.rows import dict_row
-            self.c = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+            self.c = _pg_connect()
         else:
             os.makedirs(DATA, exist_ok=True)
             self.c = sqlite3.connect(os.path.join(DATA, "mmj.db"))
             self.c.row_factory = sqlite3.Row
 
     def execute(self, sql, args=()):
-        return self.c.execute(sql.replace("?", "%s") if PG else sql, args)
+        first, self.n = self.n == 0, self.n + 1
+        if not PG:
+            return self.c.execute(sql, args)
+        import psycopg
+        sql = sql.replace("?", "%s")
+        try:
+            return self.c.execute(sql, args)
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            if not first: raise  # connection died mid-request: do not silently replay half a transaction
+            try: self.c.close()
+            except Exception: pass
+            _tl.c = None; self.c = _pg_connect()  # idle connection was dropped by the server: reconnect once
+            return self.c.execute(sql, args)
 
     def commit(self): self.c.commit()
-    def close(self): self.c.close()
+
+    def close(self):
+        if PG:
+            try: self.c.rollback()  # keep the connection open for the next request
+            except Exception: _tl.c = None
+        else:
+            self.c.close()
 
 
 def db():
@@ -215,6 +246,28 @@ def client_ip():
     return (request.headers.get("X-Forwarded-For", request.remote_addr) or "").split(",")[0].strip()
 
 
+# ---------- speed: gzip text responses, short browser cache for static files ----------
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 300
+_GZ = ("text/html", "text/css", "text/javascript", "application/javascript", "application/json", "image/svg+xml")
+
+
+@app.after_request
+def speed(resp):
+    try:
+        if (resp.status_code == 200 and "gzip" in request.headers.get("Accept-Encoding", "")
+                and "Content-Encoding" not in resp.headers and resp.mimetype in _GZ):
+            resp.direct_passthrough = False
+            data = resp.get_data()
+            if len(data) > 600:
+                import gzip
+                resp.set_data(gzip.compress(data, 5))
+                resp.headers["Content-Encoding"] = "gzip"
+                resp.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        pass
+    return resp
+
+
 # ---------- pages ----------
 def track(path):
     try:
@@ -288,7 +341,17 @@ def api_me():
 
 
 # ---------- content ----------
-def course(): return json.load(open(os.path.join(DATA, "course.json"), encoding="utf-8"))
+_FILE_CACHE = {}
+
+
+def read_json(name):
+    p = os.path.join(DATA, name); m = os.path.getmtime(p); hit = _FILE_CACHE.get(name)
+    if not hit or hit[0] != m:
+        with open(p, encoding="utf-8") as f: hit = _FILE_CACHE[name] = (m, f.read())
+    return json.loads(hit[1])
+
+
+def course(): return read_json("course.json")
 
 @app.get("/api/public")
 def api_public():
@@ -305,7 +368,7 @@ def api_content():
 @app.get("/api/foundation")
 @need()
 def api_foundation():
-    return jsonify(json.load(open(os.path.join(DATA, "foundation.json"), encoding="utf-8")))
+    return jsonify(read_json("foundation.json"))
 
 @app.get("/api/settings")
 @need()
