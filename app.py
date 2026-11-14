@@ -75,29 +75,15 @@ def now(): return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 # ---------- file storage (Supabase Storage or local folder) ----------
 def _h(extra=None):
-    # New-style Supabase keys (sb_secret_...) are not JWTs: they must be sent ONLY in the apikey header.
-    base = {"apikey": SB_KEY} if SB_KEY.startswith("sb_") else {"Authorization": "Bearer " + SB_KEY, "apikey": SB_KEY}
-    return {**base, **(extra or {})}
-
-
-def ensure_bucket():
-    if not SB: return
-    try:
-        import requests
-        requests.post(SB_URL + "/storage/v1/bucket", json={"id": BUCKET, "name": BUCKET, "public": False}, headers=_h(), timeout=30)
-    except Exception: pass
+    return {"Authorization": "Bearer " + SB_KEY, "apikey": SB_KEY, **(extra or {})}
 
 
 def store_put(name, data, ctype="application/octet-stream"):
     if SB:
         import requests
-        url = "%s/storage/v1/object/%s/%s" % (SB_URL, BUCKET, name)
-        for attempt in (1, 2):
-            r = requests.post(url, data=data, headers=_h({"Content-Type": ctype, "x-upsert": "true"}), timeout=300)
-            if r.status_code < 300: return
-            if attempt == 1 and ("not found" in r.text.lower() or r.status_code == 404): ensure_bucket(); continue
-            break
-        raise RuntimeError("Storage upload failed (%s): %s" % (r.status_code, r.text[:200]))
+        r = requests.post("%s/storage/v1/object/%s/%s" % (SB_URL, BUCKET, name), data=data,
+                          headers=_h({"Content-Type": ctype, "x-upsert": "true"}), timeout=300)
+        if r.status_code >= 300: raise RuntimeError("Storage upload failed: " + r.text[:200])
     else:
         p = os.path.join(LOCAL, name); os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "wb").write(data)
@@ -111,7 +97,6 @@ def store_get(name, rng=None):
         r = requests.get("%s/storage/v1/object/%s/%s" % (SB_URL, BUCKET, name), headers=h, stream=True, timeout=300)
         if r.status_code >= 300: abort(404)
         extra = {k: r.headers[k] for k in ("Content-Range", "Content-Length", "Accept-Ranges") if k in r.headers}
-        if r.headers.get("Content-Encoding"): extra.pop("Content-Length", None)  # body is decoded by requests, length would not match
         return r.iter_content(65536), r.headers.get("Content-Type", "application/octet-stream"), r.status_code, extra
     p = os.path.join(LOCAL, name)
     if not os.path.exists(p): abort(404)
@@ -147,14 +132,14 @@ def init():
               "CREATE TABLE IF NOT EXISTS announcements(id %s, title TEXT, body TEXT, stored TEXT, orig_name TEXT, size BIGINT, posted_by TEXT, created TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS visits(id %s, day TEXT, vid TEXT, path TEXT, ts TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS attendance(id %s, day TEXT, pid INTEGER, status TEXT, via TEXT, marked_by TEXT, ts TEXT, UNIQUE(day,pid))" % idt,
+              "CREATE TABLE IF NOT EXISTS law_entries(id %s, region TEXT, ltype TEXT, jurisdiction TEXT, ldate TEXT, title TEXT, summary TEXT, status TEXT, tags TEXT, caution TEXT, source TEXT, stored TEXT, orig_name TEXT, size BIGINT, added_by TEXT, created TEXT)" % idt,
               "CREATE TABLE IF NOT EXISTS participants(id %s, name TEXT, email TEXT, phone TEXT, org TEXT, ref TEXT, status TEXT, username TEXT, created TEXT, note TEXT)" % idt]:
         c.execute(s)
-    try:
-        c.execute("ALTER TABLE files ADD COLUMN description TEXT" if not PG else "ALTER TABLE files ADD COLUMN IF NOT EXISTS description TEXT"); c.commit()
-    except Exception:
-        try: c.c.rollback()
+    if SB:
+        try:
+            import requests
+            requests.post(SB_URL + "/storage/v1/bucket", json={"id": BUCKET, "name": BUCKET, "public": False}, headers=_h(), timeout=30)
         except Exception: pass
-    ensure_bucket()
     if not c.execute("SELECT 1 AS x FROM users LIMIT 1").fetchone():
         for u, role, name, pw in SEED:
             c.execute("INSERT INTO users(username,role,name,pw_hash) VALUES(?,?,?,?)", (u, role, name, generate_password_hash(pw)))
@@ -328,21 +313,55 @@ def api_settings():
     return jsonify(overrides=jsetting("overrides", {}), links=jsetting("links", {}), formUrl=setting("form_url", ""))
 
 ASSET_FILES = {"brochure": "Mind_Machine_Justice_2026_Course_Brochure.pdf", "primer": "Mind_Machine_Justice_2026_Participant_Primer.pdf"}
+ASSET_WORDS = {"brochure": "brochure", "primer": "primer"}
+
+
+def find_asset(key):
+    """Locate the brochure/primer PDF. Order: exact name in data/, any PDF in data/ whose name has the keyword,
+    then the newest matching file uploaded from 'Upload & files' (stored in Supabase). Returns (kind, value, filename) or None."""
+    word = ASSET_WORDS[key]
+    exact = os.path.join(DATA, ASSET_FILES[key])
+    if os.path.isfile(exact): return "disk", exact, ASSET_FILES[key]
+    if os.path.isdir(DATA):
+        for fn in sorted(os.listdir(DATA)):
+            if fn.lower().endswith(".pdf") and word in fn.lower(): return "disk", os.path.join(DATA, fn), fn
+    r = db().execute("SELECT stored,orig_name FROM files WHERE (LOWER(title) LIKE ? OR LOWER(orig_name) LIKE ?) AND LOWER(orig_name) LIKE ? "
+                     "ORDER BY id DESC LIMIT 1", ("%" + word + "%", "%" + word + "%", "%.pdf")).fetchone()
+    if r: return "store", r["stored"], r["orig_name"]
+    return None
+
 
 @app.get("/api/asset/<key>")
 @need()
 def api_asset(key):
-    if key == "cover": return send_from_directory(os.path.join(BASE, "static"), "brochure-cover.png")
+    if key == "cover":
+        p = os.path.join(BASE, "static", "brochure-cover.png")
+        if os.path.isfile(p): return send_from_directory(os.path.join(BASE, "static"), "brochure-cover.png")
+        r = db().execute("SELECT stored,orig_name FROM files WHERE LOWER(title) LIKE ? ORDER BY id DESC LIMIT 1", ("%cover%",)).fetchone()
+        if not r: abort(404)
+        it, ct, _, _ = store_get(r["stored"])
+        return Response(it, mimetype=mimetypes.guess_type(r["orig_name"])[0] or ct)
     if key not in ASSET_FILES: abort(404)
-    log("download", ASSET_FILES[key])
-    return send_from_directory(DATA, ASSET_FILES[key], as_attachment=True)
+    hit = find_asset(key)
+    if not hit:
+        label = "course brochure" if key == "brochure" else "participant primer"
+        return jsonify(error="The %s PDF has not been added to the portal yet. Admin: open Upload & files, choose the PDF, "
+                             "set the title to '%s' and upload it. It will then download from here." % (label, label.title())), 404
+    log("download", hit[2])
+    if hit[0] == "disk":
+        return send_from_directory(os.path.dirname(hit[1]), os.path.basename(hit[1]), as_attachment=True, download_name=hit[2],
+                                   mimetype="application/pdf")
+    it, _, _, extra = store_get(hit[1])
+    return Response(stream_with_context(it), mimetype="application/pdf", headers={
+        "Content-Disposition": 'attachment; filename="%s"' % hit[2], "X-Content-Type-Options": "nosniff",
+        **({"Content-Length": extra["Content-Length"]} if "Content-Length" in extra else {})})
 
 
 # ---------- files ----------
 @app.get("/api/files")
 @need()
 def api_files():
-    rows = db().execute("SELECT id,title,description,category,session_no,orig_name,size,uploaded_by,created FROM files ORDER BY id DESC").fetchall()
+    rows = db().execute("SELECT id,title,category,session_no,orig_name,size,uploaded_by,created FROM files ORDER BY id DESC").fetchall()
     return jsonify([dict(r) for r in rows])
 
 @app.post("/api/files")
@@ -355,25 +374,13 @@ def api_upload():
     if ext not in ALLOWED: return jsonify(error="File type .%s not allowed" % ext), 400
     if cat not in CATEGORIES: cat = "Other"
     sn = request.form.get("session_no"); sn = int(sn) if sn and sn.isdigit() and 1 <= int(sn) <= 14 else None
-    desc = (request.form.get("description") or "").strip()[:1000]
     data = f.read(); stored = uuid.uuid4().hex + "." + ext
     try: store_put(stored, data, f.mimetype or "application/octet-stream")
     except Exception as e: return jsonify(error=str(e)), 502
     orig = secure_filename(f.filename) or ("file." + ext)
-    db().execute("INSERT INTO files(title,description,category,session_no,orig_name,stored,size,uploaded_by,created) VALUES(?,?,?,?,?,?,?,?,?)",
-                 (title or orig, desc, cat, sn, orig, stored, len(data), session["u"], now())); db().commit()
+    db().execute("INSERT INTO files(title,category,session_no,orig_name,stored,size,uploaded_by,created) VALUES(?,?,?,?,?,?,?,?)",
+                 (title or orig, cat, sn, orig, stored, len(data), session["u"], now())); db().commit()
     log("upload", title or orig); return jsonify(ok=True)
-
-@app.patch("/api/files/<int:fid>")
-@need("admin", "faculty")
-def api_file_edit(fid):
-    r = db().execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
-    if not r: abort(404)
-    d = request.get_json(silent=True) or {}
-    title = str(d.get("title", r["title"]) or "").strip()[:160] or r["title"]
-    desc = str(d.get("description", r["description"] or "") or "").strip()[:1000]
-    db().execute("UPDATE files SET title=?, description=? WHERE id=?", (title, desc, fid)); db().commit()
-    log("file_edited", title); return jsonify(ok=True)
 
 @app.get("/api/files/<int:fid>/download")
 @need()
@@ -404,6 +411,8 @@ def api_view(fid):
 def api_delete(fid):
     u = me(); r = db().execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
     if not r: abort(404)
+    if u["role"] == "faculty" and r["uploaded_by"] != u["username"]:
+        return jsonify(error="Faculty can delete only their own uploads"), 403
     store_del(r["stored"]); db().execute("DELETE FROM files WHERE id=?", (fid,)); db().commit(); log("delete", r["title"])
     return jsonify(ok=True)
 
@@ -547,8 +556,78 @@ def ann_file(aid):
 def ann_del(aid):
     u = me(); r = db().execute("SELECT * FROM announcements WHERE id=?", (aid,)).fetchone()
     if not r: abort(404)
+    if u["role"] == "faculty" and r["posted_by"] != u["username"]:
+        return jsonify(error="Faculty can delete only their own announcements"), 403
     if r["stored"]: store_del(r["stored"])
     db().execute("DELETE FROM announcements WHERE id=?", (aid,)); db().commit(); log("announcement_deleted", r["title"])
+    return jsonify(ok=True)
+
+
+# ---------- law tracker: entries and documents added by admin / faculty ----------
+LAW_REGIONS = ("Global", "India"); LAW_TYPES = ("Legislation", "Judicial decisions", "Policy frameworks")
+
+def law_json(r):
+    return {"id": "custom-%d" % r["id"], "cid": r["id"], "custom": True, "region": r["region"], "type": r["ltype"],
+            "jurisdiction": r["jurisdiction"] or r["region"], "date": r["ldate"] or str(r["created"])[:10], "title": r["title"],
+            "summary": r["summary"] or "", "status": r["status"] or "Added by the course team",
+            "tags": [t.strip() for t in (r["tags"] or "").split(",") if t.strip()][:8], "caution": r["caution"] or "Added by the course team. Check the primary source before relying on it.",
+            "source": r["source"] or "", "sourceLabel": r["source"] or (r["orig_name"] or "Uploaded document"),
+            "checked": str(r["created"])[:10], "fileName": r["orig_name"] or "", "fileSize": r["size"] or 0, "addedBy": r["added_by"]}
+
+@app.get("/api/laws/custom")
+@need()
+def laws_list():
+    return jsonify([law_json(r) for r in db().execute("SELECT * FROM law_entries ORDER BY id DESC LIMIT 500").fetchall()])
+
+@app.post("/api/laws/custom")
+@need("admin", "faculty")
+def laws_add():
+    f = request.form
+    title = (f.get("title") or "").strip()[:240]
+    if not title: return jsonify(error="Please add a title"), 400
+    region = f.get("region") if f.get("region") in LAW_REGIONS else "Global"
+    ltype = f.get("type") if f.get("type") in LAW_TYPES else "Legislation"
+    ldate = f.get("date") if re.match(r"^\d{4}-\d{2}-\d{2}$", f.get("date") or "") else now()[:10]
+    src = (f.get("source") or "").strip()
+    if src and not https_or_none(src): return jsonify(error="The source link must start with https://"), 400
+    stored = orig = None; size = 0; up = request.files.get("file")
+    if up and up.filename:
+        ext = up.filename.rsplit(".", 1)[-1].lower() if "." in up.filename else ""
+        if ext not in ALLOWED: return jsonify(error="File type .%s not allowed" % ext), 400
+        data = up.read(); stored = "laws/" + uuid.uuid4().hex + "." + ext
+        try: store_put(stored, data, up.mimetype or "application/octet-stream")
+        except Exception as e: return jsonify(error=str(e)), 502
+        orig = secure_filename(up.filename) or ("file." + ext); size = len(data)
+    db().execute("INSERT INTO law_entries(region,ltype,jurisdiction,ldate,title,summary,status,tags,caution,source,stored,orig_name,size,added_by,created) "
+                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (region, ltype, (f.get("jurisdiction") or "").strip()[:80], ldate, title, (f.get("summary") or "").strip()[:2000],
+                  (f.get("status") or "").strip()[:120], (f.get("tags") or "").strip()[:200], (f.get("caution") or "").strip()[:1000],
+                  src, stored, orig, size, session["u"], now())); db().commit()
+    log("law_added", title); return jsonify(ok=True)
+
+@app.get("/api/laws/custom/<int:lid>/file")
+@need()
+def laws_file(lid):
+    r = db().execute("SELECT * FROM law_entries WHERE id=?", (lid,)).fetchone()
+    if not r or not r["stored"]: abort(404)
+    ext = r["orig_name"].rsplit(".", 1)[-1].lower() if "." in r["orig_name"] else ""
+    inline = ext in INLINE and not request.args.get("dl")
+    it, _, status, extra = store_get(r["stored"], request.headers.get("Range"))
+    ct = mimetypes.guess_type(r["orig_name"])[0] or "application/octet-stream"
+    log("download", r["title"])
+    return Response(stream_with_context(it), status=status, mimetype=ct, headers={
+        "Content-Disposition": '%s; filename="%s"' % ("inline" if inline else "attachment", r["orig_name"]),
+        "X-Content-Type-Options": "nosniff", "Accept-Ranges": "bytes", **extra})
+
+@app.delete("/api/laws/custom/<int:lid>")
+@need("admin", "faculty")
+def laws_del(lid):
+    u = me(); r = db().execute("SELECT * FROM law_entries WHERE id=?", (lid,)).fetchone()
+    if not r: abort(404)
+    if u["role"] == "faculty" and r["added_by"] != u["username"]:
+        return jsonify(error="Faculty can delete only their own entries"), 403
+    if r["stored"]: store_del(r["stored"])
+    db().execute("DELETE FROM law_entries WHERE id=?", (lid,)); db().commit(); log("law_deleted", r["title"])
     return jsonify(ok=True)
 
 
@@ -585,14 +664,48 @@ def a_overview():
 def valid_day(d):
     return d if re.match(r"^\d{4}-\d{2}-\d{2}$", d or "") else now()[:10]
 
+def day_no(day):
+    """Course day number (Day 1 = date of the first session in course.json), or None."""
+    try:
+        first = min(x["date"] for x in course()["sessions"])
+        n = (datetime.strptime(day, "%Y-%m-%d") - datetime.strptime(first, "%Y-%m-%d")).days + 1
+        return n if n >= 1 else None
+    except Exception: return None
+
+
+def day_label(day):
+    n = day_no(day)
+    return ("Day %d \u00b7 %s" % (n, day)) if n else day
+
+
+def day_codes():
+    """{day: (code, is_open)} for every day that has a check-in code (closed days keep their code)."""
+    out = {}
+    for r in db().execute("SELECT k,v FROM settings WHERE k LIKE ?", ("checkin_20%",)).fetchall():
+        d = r["k"][len("checkin_"):]
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", d) and r["v"]:
+            out[d] = (r["v"], setting("checkin_state_" + d) != "closed")
+    return out
+
+
+def fresh_code(taken):
+    for _ in range(200):
+        c = "%04d" % secrets.randbelow(10000)
+        if c not in taken: return c
+    return "%04d" % secrets.randbelow(10000)
+
+
 @app.get("/api/attendance")
 @need("admin", "faculty")
 def att_get():
     day = valid_day(request.args.get("day"))
     m = {r["pid"]: dict(r) for r in db().execute("SELECT pid,status,via FROM attendance WHERE day=?", (day,)).fetchall()}
     rows = db().execute("SELECT id,name,email,org FROM participants WHERE status='approved' ORDER BY name").fetchall()
-    return jsonify(day=day, code=setting("checkin_" + day), rows=[{**dict(r), "status": m.get(r["id"], {}).get("status", ""),
-                                                                   "via": m.get(r["id"], {}).get("via", "")} for r in rows])
+    codes = day_codes(); cur = codes.get(day)
+    return jsonify(day=day, day_label=day_label(day), code=cur[0] if cur else None, open=bool(cur and cur[1]),
+                   codes=[{"day": d, "label": day_label(d), "code": c, "open": o} for d, (c, o) in sorted(codes.items())],
+                   rows=[{**dict(r), "status": m.get(r["id"], {}).get("status", ""),
+                          "via": m.get(r["id"], {}).get("via", "")} for r in rows])
 
 def put_att(day, pid, status, via, by):
     db().execute("DELETE FROM attendance WHERE day=? AND pid=?", (day, pid))
@@ -610,22 +723,48 @@ def att_save():
 @app.post("/api/attendance/checkin_code")
 @need("admin", "faculty")
 def att_code():
+    """Open / update / close self check-in for one day. Every day has its own code; a code can't be reused on another day."""
     d = request.get_json(silent=True) or {}; day = valid_day(d.get("day"))
-    code = "%04d" % secrets.randbelow(10000) if d.get("open") else None
-    set_setting("checkin_" + day, code); log("checkin_open" if code else "checkin_closed", day); return jsonify(ok=True, code=code)
+    codes = day_codes()
+    if not d.get("open"):
+        if day in codes: set_setting("checkin_state_" + day, "closed"); log("checkin_closed", day)
+        return jsonify(ok=True, code=codes.get(day, (None,))[0], open=False)
+    code = str(d.get("code") or "").strip()
+    taken = {c for k, (c, _) in codes.items() if k != day}
+    if not code: code = fresh_code(taken)
+    if not re.match(r"^\d{4}$", code): return jsonify(error="The code must be exactly 4 digits"), 400
+    if code in taken:
+        other = [k for k, (c, _) in codes.items() if k != day and c == code][0]
+        return jsonify(error="Code %s is already used for %s. Choose a different code for each day." % (code, day_label(other))), 400
+    set_setting("checkin_" + day, code); set_setting("checkin_state_" + day, "open")
+    log("checkin_open", "%s code set" % day); return jsonify(ok=True, code=code, open=True)
 
-@app.post("/api/checkin")  # students self check-in (shared ID: they identify with registered email + today's code)
+@app.post("/api/attendance/random_code")
+@need("admin", "faculty")
+def att_random():
+    d = request.get_json(silent=True) or {}; day = valid_day(d.get("day"))
+    return jsonify(code=fresh_code({c for k, (c, _) in day_codes().items() if k != day}))
+
+def name_matches(typed, registered):
+    words = lambda x: {w for w in re.sub(r"[^a-z0-9 ]", " ", (x or "").lower()).split() if len(w) > 1}
+    return bool(words(typed) & words(registered))
+
+@app.post("/api/checkin")  # students self check-in (shared ID: they identify with name + registered email + today's code)
 def api_checkin():
     if request.headers.get("X-Requested-With") != "fetch": return jsonify(error="Bad request"), 400
-    ip = client_ip()
-    if throttled(ip): return jsonify(error="Too many attempts. Try later."), 429
     d = request.get_json(silent=True) or {}; day = now()[:10]
-    code = setting("checkin_" + day); email = clean(d, "email", 160).lower()
-    p = db().execute("SELECT id,name FROM participants WHERE email=? AND status='approved'", (email,)).fetchone()
-    if not code or clean(d, "code", 8) != code or not p:
-        FAILS.setdefault(ip, []).append(time.time())
-        return jsonify(error="Check-in is closed, code is wrong, or this email is not registered"), 400
-    put_att(day, p["id"], "present", "self", email); db().commit(); log("checkin", email, user="-")
+    email = clean(d, "email", 160).lower(); typed = clean(d, "name", 120)
+    key = client_ip() + "|" + email  # per-email limit, so one wrong student on shared campus Wi-Fi cannot block the room
+    if throttled(key): return jsonify(error="Too many attempts. Try again in 10 minutes."), 429
+    if not typed: return jsonify(error="Please enter your name"), 400
+    cur = day_codes().get(day); p = db().execute("SELECT id,name FROM participants WHERE email=? AND status='approved'", (email,)).fetchone()
+    if not cur or not cur[1] or clean(d, "code", 8) != cur[0] or not p:
+        FAILS.setdefault(key, []).append(time.time())
+        return jsonify(error="Check-in is closed, today's code is wrong, or this email is not registered"), 400
+    if not name_matches(typed, p["name"]):
+        FAILS.setdefault(key, []).append(time.time())
+        return jsonify(error="This name does not match the name registered for this email. Enter your name as you registered it."), 400
+    put_att(day, p["id"], "present", "self", email); db().commit(); log("checkin", "%s | %s" % (email, typed), user="-")
     return jsonify(ok=True, name=p["name"])
 
 @app.get("/api/attendance/report")
@@ -782,23 +921,6 @@ def a_logo_reset(n):
     old = setting("logo%d" % n)
     if old: store_del(old)
     set_setting("logo%d" % n, None); set_setting("logo%d_v" % n, str(int(time.time()))); return jsonify(ok=True)
-
-
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
-
-@app.get("/api/admin/storage_test")
-@need("admin")
-def storage_test():
-    """Open /api/admin/storage_test while logged in as admin to check that file storage works."""
-    out = {"mode": "supabase" if SB else "local-disk (files vanish on Render restart!)", "bucket": BUCKET,
-           "database": "postgres" if PG else "sqlite (data vanishes on Render restart!)"}
-    try:
-        n = "test/%s.txt" % uuid.uuid4().hex
-        store_put(n, b"hello", "text/plain"); it, _, _, _ = store_get(n)
-        out["roundtrip"] = b"".join(it) == b"hello"; store_del(n); out["ok"] = out["roundtrip"]
-    except Exception as ex:
-        out["ok"] = False; out["error"] = str(ex)
-    return jsonify(out)
 
 
 app.secret_key = os.getenv("SECRET_KEY") or "dev-only-change-me"
