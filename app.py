@@ -75,15 +75,29 @@ def now(): return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 # ---------- file storage (Supabase Storage or local folder) ----------
 def _h(extra=None):
-    return {"Authorization": "Bearer " + SB_KEY, "apikey": SB_KEY, **(extra or {})}
+    # New-style Supabase keys (sb_secret_...) are not JWTs: they must be sent ONLY in the apikey header.
+    base = {"apikey": SB_KEY} if SB_KEY.startswith("sb_") else {"Authorization": "Bearer " + SB_KEY, "apikey": SB_KEY}
+    return {**base, **(extra or {})}
+
+
+def ensure_bucket():
+    if not SB: return
+    try:
+        import requests
+        requests.post(SB_URL + "/storage/v1/bucket", json={"id": BUCKET, "name": BUCKET, "public": False}, headers=_h(), timeout=30)
+    except Exception: pass
 
 
 def store_put(name, data, ctype="application/octet-stream"):
     if SB:
         import requests
-        r = requests.post("%s/storage/v1/object/%s/%s" % (SB_URL, BUCKET, name), data=data,
-                          headers=_h({"Content-Type": ctype, "x-upsert": "true"}), timeout=300)
-        if r.status_code >= 300: raise RuntimeError("Storage upload failed: " + r.text[:200])
+        url = "%s/storage/v1/object/%s/%s" % (SB_URL, BUCKET, name)
+        for attempt in (1, 2):
+            r = requests.post(url, data=data, headers=_h({"Content-Type": ctype, "x-upsert": "true"}), timeout=300)
+            if r.status_code < 300: return
+            if attempt == 1 and ("not found" in r.text.lower() or r.status_code == 404): ensure_bucket(); continue
+            break
+        raise RuntimeError("Storage upload failed (%s): %s" % (r.status_code, r.text[:200]))
     else:
         p = os.path.join(LOCAL, name); os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "wb").write(data)
@@ -97,6 +111,7 @@ def store_get(name, rng=None):
         r = requests.get("%s/storage/v1/object/%s/%s" % (SB_URL, BUCKET, name), headers=h, stream=True, timeout=300)
         if r.status_code >= 300: abort(404)
         extra = {k: r.headers[k] for k in ("Content-Range", "Content-Length", "Accept-Ranges") if k in r.headers}
+        if r.headers.get("Content-Encoding"): extra.pop("Content-Length", None)  # body is decoded by requests, length would not match
         return r.iter_content(65536), r.headers.get("Content-Type", "application/octet-stream"), r.status_code, extra
     p = os.path.join(LOCAL, name)
     if not os.path.exists(p): abort(404)
@@ -134,11 +149,7 @@ def init():
               "CREATE TABLE IF NOT EXISTS attendance(id %s, day TEXT, pid INTEGER, status TEXT, via TEXT, marked_by TEXT, ts TEXT, UNIQUE(day,pid))" % idt,
               "CREATE TABLE IF NOT EXISTS participants(id %s, name TEXT, email TEXT, phone TEXT, org TEXT, ref TEXT, status TEXT, username TEXT, created TEXT, note TEXT)" % idt]:
         c.execute(s)
-    if SB:
-        try:
-            import requests
-            requests.post(SB_URL + "/storage/v1/bucket", json={"id": BUCKET, "name": BUCKET, "public": False}, headers=_h(), timeout=30)
-        except Exception: pass
+    ensure_bucket()
     if not c.execute("SELECT 1 AS x FROM users LIMIT 1").fetchone():
         for u, role, name, pw in SEED:
             c.execute("INSERT INTO users(username,role,name,pw_hash) VALUES(?,?,?,?)", (u, role, name, generate_password_hash(pw)))
@@ -376,8 +387,6 @@ def api_view(fid):
 def api_delete(fid):
     u = me(); r = db().execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
     if not r: abort(404)
-    if u["role"] == "faculty" and r["uploaded_by"] != u["username"]:
-        return jsonify(error="Faculty can delete only their own uploads"), 403
     store_del(r["stored"]); db().execute("DELETE FROM files WHERE id=?", (fid,)); db().commit(); log("delete", r["title"])
     return jsonify(ok=True)
 
@@ -521,8 +530,6 @@ def ann_file(aid):
 def ann_del(aid):
     u = me(); r = db().execute("SELECT * FROM announcements WHERE id=?", (aid,)).fetchone()
     if not r: abort(404)
-    if u["role"] == "faculty" and r["posted_by"] != u["username"]:
-        return jsonify(error="Faculty can delete only their own announcements"), 403
     if r["stored"]: store_del(r["stored"])
     db().execute("DELETE FROM announcements WHERE id=?", (aid,)); db().commit(); log("announcement_deleted", r["title"])
     return jsonify(ok=True)
@@ -758,6 +765,23 @@ def a_logo_reset(n):
     old = setting("logo%d" % n)
     if old: store_del(old)
     set_setting("logo%d" % n, None); set_setting("logo%d_v" % n, str(int(time.time()))); return jsonify(ok=True)
+
+
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+@app.get("/api/admin/storage_test")
+@need("admin")
+def storage_test():
+    """Open /api/admin/storage_test while logged in as admin to check that file storage works."""
+    out = {"mode": "supabase" if SB else "local-disk (files vanish on Render restart!)", "bucket": BUCKET,
+           "database": "postgres" if PG else "sqlite (data vanishes on Render restart!)"}
+    try:
+        n = "test/%s.txt" % uuid.uuid4().hex
+        store_put(n, b"hello", "text/plain"); it, _, _, _ = store_get(n)
+        out["roundtrip"] = b"".join(it) == b"hello"; store_del(n); out["ok"] = out["roundtrip"]
+    except Exception as ex:
+        out["ok"] = False; out["error"] = str(ex)
+    return jsonify(out)
 
 
 app.secret_key = os.getenv("SECRET_KEY") or "dev-only-change-me"
