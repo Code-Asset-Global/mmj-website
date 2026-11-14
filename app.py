@@ -816,7 +816,12 @@ def att_get():
     day = valid_day(request.args.get("day"))
     m = {r["pid"]: dict(r) for r in db().execute("SELECT pid,status,via FROM attendance WHERE day=?", (day,)).fetchall()}
     rows = db().execute("SELECT id,name,email,org FROM participants WHERE status='approved' ORDER BY name").fetchall()
-    codes = day_codes(); cur = codes.get(day)
+    codes = day_codes()
+    # every class day gets its own fresh 4-digit code automatically (kept closed until faculty opens check-in)
+    if day == now()[:10] and day in {x["date"] for x in course()["sessions"]} and day not in codes:
+        set_setting("checkin_" + day, fresh_code({c for c, _ in codes.values()}))
+        set_setting("checkin_state_" + day, "closed"); codes = day_codes()
+    cur = codes.get(day)
     return jsonify(day=day, day_label=day_label(day), code=cur[0] if cur else None, open=bool(cur and cur[1]),
                    codes=[{"day": d, "label": day_label(d), "code": c, "open": o} for d, (c, o) in sorted(codes.items())],
                    rows=[{**dict(r), "status": m.get(r["id"], {}).get("status", ""),
