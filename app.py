@@ -927,5 +927,24 @@ def a_logo_reset(n):
 app.secret_key = os.getenv("SECRET_KEY") or "dev-only-change-me"
 init()
 
+# ---- Keep-alive: on Render free plan the service sleeps after ~15 min without traffic.
+# While awake, ping our own public URL every few minutes so it keeps counting as traffic.
+# Set KEEPALIVE=0 to switch it off. KEEPALIVE_URL overrides the URL (RENDER_EXTERNAL_URL is automatic on Render).
+def _start_keepalive():
+    import threading
+    if os.getenv("KEEPALIVE", "1") == "0": return
+    base = (os.getenv("KEEPALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    if not base: return
+    every = max(60, int(os.getenv("KEEPALIVE_SECONDS", "540")))
+    def loop():
+        import requests
+        while True:
+            time.sleep(every)
+            try: requests.get(base + "/healthz", timeout=20)
+            except Exception: pass
+    threading.Thread(target=loop, daemon=True, name="keepalive").start()
+
+_start_keepalive()
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
