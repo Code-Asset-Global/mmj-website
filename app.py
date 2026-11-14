@@ -310,7 +310,8 @@ def api_foundation():
 @app.get("/api/settings")
 @need()
 def api_settings():
-    return jsonify(overrides=jsetting("overrides", {}), links=jsetting("links", {}), formUrl=setting("form_url", ""))
+    return jsonify(overrides=jsetting("overrides", {}), links=jsetting("links", {}), formUrl=setting("form_url", ""),
+                   assets={k: bool(find_asset(k)) for k in ASSET_FILES})
 
 ASSET_FILES = {"brochure": "Mind_Machine_Justice_2026_Course_Brochure.pdf", "primer": "Mind_Machine_Justice_2026_Participant_Primer.pdf"}
 ASSET_WORDS = {"brochure": "brochure", "primer": "primer"}
