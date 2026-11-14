@@ -18,4 +18,3 @@ services:
       - {key: FACULTY_PASSWORD, sync: false}
       - {key: PARTICIPANT_PASSWORD, sync: false}
       - {key: PARTICIPANT2_PASSWORD, sync: false}
-      - {key: GROQ_API_KEY, sync: false}
