@@ -274,8 +274,12 @@ def log(action, detail="", user=None):
 
 
 # ---------- auth ----------
+IDLE_MIN = int(os.getenv("IDLE_MINUTES", "30"))   # signed out after this many minutes without using the portal
 def me():
     if "u" not in session: return None
+    t = time.time(); last = session.get("t", t)
+    if t - last > IDLE_MIN * 60: session.clear(); return None
+    if t - last > 30 or "t" not in session: session["t"] = t
     if session.get("d") != now()[:10]:  # sign-in is valid for the calendar day (IST) only; next day = sign in again
         session.clear(); return None
     r = memo(("me", session["u"]), lambda: (lambda x: dict(x) if x else None)(
@@ -428,7 +432,7 @@ def api_login():
         FAILS.setdefault(tkey, []).append(time.time())
         log("login_failed", str(d.get("username", ""))[:40], user="-")
         return jsonify(error="Wrong ID or password"), 401
-    session.clear(); session.permanent = True; session["u"] = r["username"]; session["d"] = now()[:10]; log("login")
+    session.clear(); session.permanent = False; session["t"] = time.time(); session["u"] = r["username"]; session["d"] = now()[:10]; log("login")
     return jsonify(ok=True, redirect="/")
 
 @app.post("/api/logout")
