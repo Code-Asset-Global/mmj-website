@@ -1048,11 +1048,17 @@ def a_active(uid):
     log("user_enabled" if on else "user_disabled", r["username"]); return jsonify(ok=True)
 
 @app.get("/api/admin/logs")
-@need("admin")
+@need("admin", "faculty")
 def a_logs():
-    rows = db().execute("SELECT ts,username,action,detail,ip FROM logs ORDER BY id DESC LIMIT 200").fetchall()
+    admin = me()["role"] == "admin"; since = now()[:10] + " 00:00:00"
+    SAFE = ("login", "download", "upload", "checkin", "announcement_posted", "assignment_published", "assignment_edited", "assignment_deleted")
+    if admin: rows = db().execute("SELECT ts,username,action,detail,ip FROM logs ORDER BY id DESC LIMIT 200").fetchall()
+    else:  # faculty see learning activity only, not account / password / security events
+        rows = db().execute("SELECT ts,username,action,detail,ip FROM logs WHERE action IN (%s) ORDER BY id DESC LIMIT 200" % ",".join("?" * len(SAFE)), SAFE).fetchall()
+    cnt = lambda act: db().execute("SELECT COUNT(*) AS n FROM logs WHERE action=? AND ts>=?", (act, since)).fetchone()["n"]
+    top = [dict(r) for r in db().execute("SELECT detail, COUNT(*) AS c FROM logs WHERE action='download' AND ts>=? GROUP BY detail ORDER BY c DESC LIMIT 8", (since,)).fetchall()]
     n = lambda s: db().execute(s).fetchone()["n"]
-    return jsonify(logs=[dict(r) for r in rows], stats=dict(
+    return jsonify(logs=[dict(r) for r in rows], today=dict(logins=cnt("login"), checkins=cnt("checkin"), downloads=cnt("download"), top=top), stats=dict(
         files=n("SELECT COUNT(*) AS n FROM files"), downloads=n("SELECT COUNT(*) AS n FROM logs WHERE action='download'"),
         logins=n("SELECT COUNT(*) AS n FROM logs WHERE action='login'")))
 
