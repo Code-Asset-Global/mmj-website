@@ -167,6 +167,51 @@ def store_del(name):
         pass
 
 
+# ---------- fast sign-in for a whole class logging in at the same second ----------
+# scrypt is deliberately slow. A correct password is remembered (as a keyed hash, never the password itself) for 12 hours,
+# so when 200 people use the shared ID together only the first one pays the cost and the rest are instant.
+import hmac as _hmac, hashlib as _hashlib
+_PWOK = {}; _PWKEY = secrets.token_bytes(16); _PWLOCKS = {}
+def pw_ok(row, pw):
+    k = (row["username"], row["pw_hash"], _hmac.new(_PWKEY, pw.encode(), _hashlib.sha256).hexdigest())
+    if _PWOK.get(k, 0) > time.time(): return True
+    with _PWLOCKS.setdefault(row["username"], threading.Lock()):   # others wait for the first check instead of all running scrypt
+        if _PWOK.get(k, 0) > time.time(): return True
+        if not check_password_hash(row["pw_hash"], pw): return False
+        if len(_PWOK) > 500: _PWOK.clear()
+        _PWOK[k] = time.time() + 43200; return True
+
+
+# ---------- big files: let Supabase send them straight to the browser (not through this server) ----------
+from urllib.parse import quote as _q
+MEDIA_EXT = {"mp4", "webm", "mov", "m4v", "mp3", "wav", "m4a"}
+_SIGN = {}
+def store_url(name, filename=None, download=False):
+    if not SB: return None
+    k = (name, filename if download else None); hit = _SIGN.get(k)
+    if hit and hit[1] > time.time(): return hit[0]
+    try:
+        import requests
+        r = requests.post("%s/storage/v1/object/sign/%s/%s" % (SB_URL, BUCKET, name), json={"expiresIn": 7200},
+                          headers=_h({"Content-Type": "application/json"}), timeout=15)
+        if r.status_code >= 300: return None
+        s = r.json().get("signedURL") or r.json().get("signedUrl") or ""
+        if not s: return None
+        u = s if s.startswith("http") else (SB_URL + s if s.startswith("/storage/v1") else SB_URL + "/storage/v1" + s)
+        if download: u += ("&" if "?" in u else "?") + "download=" + _q(filename or "file")
+        if len(_SIGN) > 1000: _SIGN.clear()
+        _SIGN[k] = (u, time.time() + 6000); return u
+    except Exception:
+        return None
+
+def direct(stored, orig, inline):
+    """redirect to a short-lived Supabase link for videos/audio (playback) and for downloads; None = stream it ourselves"""
+    ext = orig.rsplit(".", 1)[-1].lower() if orig and "." in orig else ""
+    if inline and ext not in MEDIA_EXT: return None
+    u = store_url(stored, orig, download=not inline)
+    return redirect(u) if u else None
+
+
 def init():
     c = Conn(); idt = "SERIAL PRIMARY KEY" if PG else "INTEGER PRIMARY KEY"
     for s in ["CREATE TABLE IF NOT EXISTS users(id %s, username TEXT UNIQUE, role TEXT, name TEXT, pw_hash TEXT, active INTEGER DEFAULT 1)" % idt,
@@ -253,9 +298,9 @@ def need(*roles):
 
 
 FAILS = {}
-def throttled(ip):
+def throttled(ip, limit=8):
     t = time.time(); FAILS[ip] = [x for x in FAILS.get(ip, []) if t - x < 600]
-    return len(FAILS[ip]) >= 8
+    return len(FAILS[ip]) >= limit
 
 
 def client_ip():
@@ -374,12 +419,13 @@ def too_big(_): return jsonify(error="File is larger than %d MB. For long videos
 # ---------- auth API ----------
 @app.post("/api/login")
 def api_login():
-    ip = client_ip()
-    if throttled(ip): return jsonify(error="Too many attempts. Try again in 10 minutes."), 429
-    d = request.get_json(silent=True) or {}
+    ip = client_ip(); d = request.get_json(silent=True) or {}
+    # limit is per (network + ID), so one wrong password on a shared campus Wi-Fi cannot lock the whole room out
+    tkey = ip + "|" + str(d.get("username", "")).strip().lower()[:60]
+    if throttled(tkey, 25): return jsonify(error="Too many attempts. Try again in 10 minutes."), 429
     r = db().execute("SELECT * FROM users WHERE username=?", (str(d.get("username", "")).strip().lower(),)).fetchone()
-    if not r or not r["active"] or not check_password_hash(r["pw_hash"], str(d.get("password", ""))):
-        FAILS.setdefault(ip, []).append(time.time())
+    if not r or not r["active"] or not pw_ok(r, str(d.get("password", ""))):
+        FAILS.setdefault(tkey, []).append(time.time())
         log("login_failed", str(d.get("username", ""))[:40], user="-")
         return jsonify(error="Wrong ID or password"), 401
     session.clear(); session.permanent = True; session["u"] = r["username"]; session["d"] = now()[:10]; log("login")
@@ -503,7 +549,9 @@ def api_upload():
 def api_download(fid):
     r = db().execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
     if not r: abort(404)
-    log("download", r["title"]); it, ct, _, extra = store_get(r["stored"])
+    log("download", r["title"]); d = direct(r["stored"], r["orig_name"], False)
+    if d: return d
+    it, ct, _, extra = store_get(r["stored"])
     return Response(stream_with_context(it), mimetype=ct, headers={
         "Content-Disposition": 'attachment; filename="%s"' % r["orig_name"], "X-Content-Type-Options": "nosniff",
         **({"Content-Length": extra["Content-Length"]} if "Content-Length" in extra else {})})
@@ -516,6 +564,8 @@ def api_view(fid):
     if not r: abort(404)
     ext = r["orig_name"].rsplit(".", 1)[-1].lower() if "." in r["orig_name"] else ""
     if ext not in INLINE: return redirect("/api/files/%d/download" % fid)
+    d = direct(r["stored"], r["orig_name"], True)
+    if d: return d
     it, _, status, extra = store_get(r["stored"], request.headers.get("Range"))
     ct = mimetypes.guess_type(r["orig_name"])[0] or "application/octet-stream"
     return Response(stream_with_context(it), status=status, mimetype=ct, headers={
@@ -660,6 +710,8 @@ def ann_file(aid):
     if not r or not r["stored"]: abort(404)
     ext = r["orig_name"].rsplit(".", 1)[-1].lower() if "." in r["orig_name"] else ""
     inline = ext in INLINE and not request.args.get("dl")
+    d = direct(r["stored"], r["orig_name"], inline)
+    if d: return d
     it, _, status, extra = store_get(r["stored"], request.headers.get("Range"))
     ct = mimetypes.guess_type(r["orig_name"])[0] or "application/octet-stream"
     return Response(stream_with_context(it), status=status, mimetype=ct, headers={
@@ -760,6 +812,8 @@ def laws_file(lid):
     if not r or not r["stored"]: abort(404)
     ext = r["orig_name"].rsplit(".", 1)[-1].lower() if "." in r["orig_name"] else ""
     inline = ext in INLINE and not request.args.get("dl")
+    d = direct(r["stored"], r["orig_name"], inline)
+    if d: return d
     it, _, status, extra = store_get(r["stored"], request.headers.get("Range"))
     ct = mimetypes.guess_type(r["orig_name"])[0] or "application/octet-stream"
     log("download", r["title"])
