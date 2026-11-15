@@ -678,6 +678,39 @@ def ann_del(aid):
     return jsonify(ok=True)
 
 
+# ---------- assignments: published by admin / faculty, visible to everyone ----------
+@app.get("/api/assignments")
+@need()
+def asg_list(): return jsonify(jsetting("assignments", []))
+
+@app.post("/api/assignments")
+@need("admin", "faculty")
+def asg_save():
+    d = request.get_json(silent=True) or {}
+    title = clean(d, "title", 160); ins = clean(d, "instructions", 4000); day = clean(d, "day", 40) or "Course-wide"
+    deadline = clean(d, "deadline", 40); url = str(d.get("form_url") or "").strip()
+    if not title: return jsonify(error="Please add a title"), 400
+    if url and not https_or_none(url): return jsonify(error="Please paste a valid https:// Google Form link"), 400
+    L = jsetting("assignments", []); aid = d.get("id")
+    if aid:
+        it = next((x for x in L if x.get("id") == aid), None)
+        if not it: abort(404)
+        it.update(title=title, instructions=ins, day=day, deadline=deadline, form_url=url, updated=now())
+        log("assignment_edited", title)
+    else:
+        L.insert(0, {"id": int(time.time() * 1000), "title": title, "instructions": ins, "day": day, "deadline": deadline,
+                     "form_url": url, "posted_by": session["u"], "created": now()})
+        log("assignment_published", title)
+    set_jsetting("assignments", L[:200]); return jsonify(ok=True)
+
+@app.delete("/api/assignments/<int:aid>")
+@need("admin", "faculty")
+def asg_del(aid):
+    L = jsetting("assignments", []); it = next((x for x in L if x.get("id") == aid), None)
+    if not it: abort(404)
+    set_jsetting("assignments", [x for x in L if x.get("id") != aid]); log("assignment_deleted", it.get("title", "")); return jsonify(ok=True)
+
+
 # ---------- law tracker: entries and documents added by admin / faculty ----------
 LAW_REGIONS = ("Global", "India"); LAW_TYPES = ("Legislation", "Judicial decisions", "Policy frameworks")
 
@@ -1005,7 +1038,7 @@ def a_link_del(n, i):
     L[str(n)] = arr; set_jsetting("links", L); log("link_removed", "session %d" % n); return jsonify(ok=True)
 
 @app.post("/api/admin/formurl")
-@need("admin")
+@need("admin", "faculty")
 def a_formurl():
     raw = ((request.get_json(silent=True) or {}).get("url") or "").strip()
     if raw and not https_or_none(raw): return jsonify(error="Please paste a valid https:// link"), 400
