@@ -539,6 +539,7 @@ def api_upload():
     ext = f.filename.rsplit(".", 1)[-1].lower() if "." in f.filename else ""
     if ext not in ALLOWED: return jsonify(error="File type .%s not allowed" % ext), 400
     if cat not in CATEGORIES: cat = "Other"
+    if cat == "Other" and re.search(r"brochure|primer", (title + " " + f.filename).lower()): cat = CATEGORIES[0]  # brochure / primer always land in their own category
     sn = request.form.get("session_no"); sn = int(sn) if sn and sn.isdigit() and 1 <= int(sn) <= 14 else None
     data = f.read(); stored = uuid.uuid4().hex + "." + ext
     try: store_put(stored, data, f.mimetype or "application/octet-stream")
