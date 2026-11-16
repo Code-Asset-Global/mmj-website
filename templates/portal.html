@@ -194,11 +194,32 @@ body{background:var(--bg);color:var(--ink)}
 @media(max-width:850px){.sidebar{top:140px!important;z-index:40}}
 @media(max-width:700px){.sidebar{top:134px!important}}
 </style>
+<style>
+.spin{display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:mmjspin .7s linear infinite;vertical-align:-.15em}
+@keyframes mmjspin{to{transform:rotate(360deg)}}
+.empty .spin{width:18px;height:18px;margin-right:8px;color:var(--blue)}
+.button:disabled{opacity:.75;cursor:progress}
+.panel{position:relative}
+.panel.is-busy{pointer-events:none}
+.panel.is-busy::after{content:"";position:absolute;inset:0;background:rgba(255,255,255,.55);border-radius:inherit;z-index:2}
+.panel.is-busy::before{content:"";position:absolute;top:50%;left:50%;width:30px;height:30px;margin:-15px 0 0 -15px;border:3px solid var(--blue);border-right-color:transparent;border-radius:50%;animation:mmjspin .7s linear infinite;z-index:3}
+.side-close{position:absolute;top:8px;right:10px;width:28px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:#fff;border:1px solid #c8d8e8;border-radius:6px;color:var(--navy);font-size:18px;line-height:1;z-index:2}
+.side-close:hover{background:#e6eef7}
+@media(min-width:851px){
+  .sidebar{transition:transform .2s}
+  #menu{display:none}
+  body.side-collapsed .sidebar{transform:translateX(-100%);box-shadow:none}
+  body.side-collapsed .shell{margin-left:0;transition:margin .2s}
+  body.side-collapsed #menu{display:inline-flex;padding:7px 10px;background:#e6eef7;border:1px solid #c8d8e8;border-radius:5px;color:var(--navy);font-size:18px}
+}
+@media print{.side-close{display:none!important}}
+</style>
 </head>
 <body style="--logo:{{ brand.size }}px">
 <div class="clockbar" role="timer" aria-label="Current date and time"><span class="ck"><span class="live"></span><small>DAY</small><b id="ck-day">--</b></span><span class="sep"></span><span class="ck"><small>DATE</small><b id="ck-date">--</b></span><span class="sep"></span><span class="ck"><small>TIME (IST)</small><b id="ck-time">--:--:--</b></span><span class="sep"></span><span class="ck st"><small>STATUS</small><b>Updated live</b></span></div>
 <a class="skip" href="#main">Skip to course content</a>
 <aside class="sidebar" id="sidebar">
+  <button type="button" id="side-close" class="side-close" aria-label="Hide sidebar" title="Hide sidebar">‹</button>
   <a href="#overview" class="brand"><span class="brand-symbol" aria-hidden="true">M</span><span>Mind, Machine<br>&amp; Justice</span></a>
   <div class="edition">LEARNING PORTAL · 2026</div>
   <nav class="nav" aria-label="Course navigation" id="navigation"></nav>
@@ -224,7 +245,7 @@ body{background:var(--bg);color:var(--ink)}
 })();
 </script>
 <script>window.__BOOT__={{ boot|safe }};</script>
-<script src="/static/portal.js?v=16"></script>
+<script src="/static/portal.js?v=17"></script>
 <script>(function(){var tz='Asia/Kolkata',M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],d=document.getElementById('ck-day'),a=document.getElementById('ck-date'),t=document.getElementById('ck-time');
 var fd=new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'numeric',year:'numeric',timeZone:tz});
 function tick(){var n=new Date(),p={};fd.formatToParts(n).forEach(function(x){p[x.type]=x.value});d.textContent=n.toLocaleDateString('en-IN',{weekday:'long',timeZone:tz});a.textContent=p.day+' '+M[Number(p.month)-1]+' '+p.year;t.textContent=n.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZone:tz}).toUpperCase()}
