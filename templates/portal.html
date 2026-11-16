@@ -195,9 +195,9 @@ body{background:var(--bg);color:var(--ink)}
 @media(max-width:700px){.sidebar{top:134px!important}}
 </style>
 <style>
-.spin{display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:mmjspin .7s linear infinite;vertical-align:-.15em}
+.mspin{display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:mmjspin .7s linear infinite;vertical-align:-.15em}
 @keyframes mmjspin{to{transform:rotate(360deg)}}
-.empty .spin{width:18px;height:18px;margin-right:8px;color:var(--blue)}
+.empty .mspin{width:18px;height:18px;margin-right:8px;color:var(--blue)}
 .button:disabled{opacity:.75;cursor:progress}
 .panel{position:relative}
 .panel.is-busy{pointer-events:none}
@@ -212,6 +212,11 @@ body{background:var(--bg);color:var(--ink)}
   body.side-collapsed .shell{margin-left:0;transition:margin .2s}
   body.side-collapsed #menu{display:inline-flex;padding:7px 10px;background:#e6eef7;border:1px solid #c8d8e8;border-radius:5px;color:var(--navy);font-size:18px}
 }
+/* live status blink */
+.clockbar .ck.st b{display:inline-flex;align-items:center;gap:7px;color:#8ff0b3;animation:ckblink 1.5s ease-in-out infinite}
+.clockbar .ck.st b::before{content:"";width:8px;height:8px;border-radius:50%;background:#46d37f;box-shadow:0 0 8px #46d37f}
+@keyframes ckblink{0%,100%{opacity:1;text-shadow:0 0 10px #46d37f99}50%{opacity:.3;text-shadow:none}}
+@media(prefers-reduced-motion:reduce){.clockbar .ck.st b{animation:none}}
 @media print{.side-close{display:none!important}}
 </style>
 </head>
@@ -245,7 +250,7 @@ body{background:var(--bg);color:var(--ink)}
 })();
 </script>
 <script>window.__BOOT__={{ boot|safe }};</script>
-<script src="/static/portal.js?v=17"></script>
+<script src="/static/portal.js?v=20"></script>
 <script>(function(){var tz='Asia/Kolkata',M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],d=document.getElementById('ck-day'),a=document.getElementById('ck-date'),t=document.getElementById('ck-time');
 var fd=new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'numeric',year:'numeric',timeZone:tz});
 function tick(){var n=new Date(),p={};fd.formatToParts(n).forEach(function(x){p[x.type]=x.value});d.textContent=n.toLocaleDateString('en-IN',{weekday:'long',timeZone:tz});a.textContent=p.day+' '+M[Number(p.month)-1]+' '+p.year;t.textContent=n.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZone:tz}).toUpperCase()}
