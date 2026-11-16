@@ -212,16 +212,36 @@ body{background:var(--bg);color:var(--ink)}
   body.side-collapsed .shell{margin-left:0;transition:margin .2s}
   body.side-collapsed #menu{display:inline-flex;padding:7px 10px;background:#e6eef7;border:1px solid #c8d8e8;border-radius:5px;color:var(--navy);font-size:18px}
 }
-/* live status blink */
-.clockbar .ck.st b{display:inline-flex;align-items:center;gap:7px;color:#8ff0b3;animation:ckblink 3.6s ease-in-out infinite}
-.clockbar .ck.st b::before{content:"";width:8px;height:8px;border-radius:50%;background:#46d37f;box-shadow:0 0 8px #46d37f}
-@keyframes ckblink{0%,100%{opacity:1;text-shadow:0 0 10px #46d37f99}50%{opacity:.55;text-shadow:none}}
-@media(prefers-reduced-motion:reduce){.clockbar .ck.st b{animation:none}}
+/* live status: real server connection */
+.clockbar .ck.st b{display:inline-flex;align-items:center;gap:9px;font-weight:700;color:#8ff0b3;transition:color .5s}
+.clockbar .ck.st b.warn{color:#f1d596}
+.clockbar .ck.st b.off{color:#ff9a93}
+.lv-dot{position:relative;width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
+.lv-dot::after{content:"";position:absolute;inset:0;border-radius:50%;background:currentColor;animation:lvping 2.6s ease-out infinite}
+.clockbar .ck.st b.off .lv-dot::after{animation-duration:1.4s}
+@keyframes lvping{0%{transform:scale(1);opacity:.55}75%,100%{transform:scale(3);opacity:0}}
+#ck-st-text{font-variant-numeric:tabular-nums;font-size:13px;letter-spacing:.2px}
+#ck-st-text.sw{animation:lvswap .6s ease}
+@keyframes lvswap{0%{opacity:.2;transform:translateY(3px)}100%{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.lv-dot::after,#ck-st-text.sw{animation:none}}
+/* live status on mobile */
+.st-s{display:none}
+@media(max-width:900px){.clockbar .ck.st{display:flex}}
+@media(max-width:700px){
+  .clockbar{gap:9px;padding:0 10px}
+  .clockbar .ck{gap:5px}
+  .clockbar .ck.st small{display:none}
+  .clockbar .ck.st b{gap:6px}
+  .st-f{display:none}.st-s{display:inline}
+  #ck-st-text{font-size:12px}
+  .lv-dot{width:7px;height:7px}
+}
+@media(max-width:370px){.st-ms{display:none}.clockbar{gap:7px;padding:0 8px}}
 @media print{.side-close{display:none!important}}
 </style>
 </head>
 <body style="--logo:{{ brand.size }}px">
-<div class="clockbar" role="timer" aria-label="Current date and time"><span class="ck"><span class="live"></span><small>DAY</small><b id="ck-day">--</b></span><span class="sep"></span><span class="ck"><small>DATE</small><b id="ck-date">--</b></span><span class="sep"></span><span class="ck"><small>TIME (IST)</small><b id="ck-time">--:--:--</b></span><span class="sep"></span><span class="ck st"><small>STATUS</small><b>Updated live</b></span></div>
+<div class="clockbar" role="timer" aria-label="Current date and time"><span class="ck"><span class="live"></span><small>DAY</small><b id="ck-day">--</b></span><span class="sep"></span><span class="ck"><small>DATE</small><b id="ck-date">--</b></span><span class="sep"></span><span class="ck"><small>TIME (IST)</small><b id="ck-time">--:--:--</b></span><span class="sep"></span><span class="ck st"><small>STATUS</small><b id="ck-status" class="ok" title="Checking server connection"><i class="lv-dot"></i><span id="ck-st-text"><span class="st-f">Connecting…</span><span class="st-s">Connecting…</span></span></b></span></div>
 <a class="skip" href="#main">Skip to course content</a>
 <aside class="sidebar" id="sidebar">
   <button type="button" id="side-close" class="side-close" aria-label="Hide sidebar" title="Hide sidebar">‹</button>
@@ -254,4 +274,26 @@ body{background:var(--bg);color:var(--ink)}
 <script>(function(){var tz='Asia/Kolkata',M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],d=document.getElementById('ck-day'),a=document.getElementById('ck-date'),t=document.getElementById('ck-time');
 var fd=new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'numeric',year:'numeric',timeZone:tz});
 function tick(){var n=new Date(),p={};fd.formatToParts(n).forEach(function(x){p[x.type]=x.value});d.textContent=n.toLocaleDateString('en-IN',{weekday:'long',timeZone:tz});a.textContent=p.day+' '+M[Number(p.month)-1]+' '+p.year;t.textContent=n.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZone:tz}).toUpperCase()}
-tick();setInterval(tick,1000)})();</script></body></html>
+tick();setInterval(tick,1000)})();</script><script>(function(){
+var b=document.getElementById('ck-status'),tx=document.getElementById('ck-st-text');if(!b||!tx)return;
+var fails=0,busy=false;
+function set(c,f,s,tip){var html='<span class="st-f">'+f+'</span><span class="st-s">'+s+'</span>';b.className=c;b.title=tip||'';if(tx.dataset.h!==html){tx.dataset.h=html;tx.innerHTML=html;tx.classList.remove('sw');void tx.offsetWidth;tx.classList.add('sw')}}
+async function ping(){
+  if(busy||document.hidden)return;busy=true;
+  var t0=performance.now(),ac=new AbortController(),to=setTimeout(function(){ac.abort()},6000);
+  try{
+    await fetch('/api/me',{cache:'no-store',credentials:'same-origin',signal:ac.signal});
+    clearTimeout(to);var ms=Math.round(performance.now()-t0);fails=0;
+    var tm=new Date().toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false});
+    if(ms>1500)set('warn','Slow connection · '+ms+' ms','Slow<span class="st-ms"> · '+ms+' ms</span>','Server reachable but slow. Last checked '+tm+' IST');
+    else set('ok','Live · Server connected · '+ms+' ms','Live<span class="st-ms"> · '+ms+' ms</span>','Connected to server. Last checked '+tm+' IST');
+  }catch(_){
+    clearTimeout(to);fails++;
+    set(fails>1?'off':'warn',navigator.onLine===false?'Offline · Reconnecting…':'Reconnecting…',fails>1?'Offline':'Retrying…','Cannot reach the server. Retrying automatically.');
+  }finally{busy=false}
+}
+ping();setInterval(ping,15000);
+addEventListener('online',ping);addEventListener('offline',function(){set('off','Offline · Reconnecting…','Offline','No internet connection.')});
+document.addEventListener('visibilitychange',function(){if(!document.hidden)ping()});
+})();</script>
+</body></html>
