@@ -184,6 +184,11 @@ body{background:var(--bg);color:var(--ink)}
 <style>
 .logo-left img{height:84px!important;width:auto!important;max-width:min(330px,60vw)!important;object-fit:contain!important;background:#fff!important;padding:5px 12px!important;border-radius:12px!important;box-shadow:0 2px 12px #17355726!important}
 @media(max-width:600px){.logo-left img{height:50px!important;padding:3px 7px!important}}
+
+/* phone/tablet menu: keep "Mind, Machine & Justice" on two clean lines, fully visible */
+.brand>span:last-child{white-space:nowrap}
+@media(max-width:1150px){.brand{font-size:17px;gap:10px}.brand-symbol{width:40px;height:44px;flex:none}}
+@media(max-width:850px){.sidebar{width:min(290px,84vw);padding-left:20px;padding-right:20px}.brand{font-size:19px}}
 </style>
 </head>
 <body style="--logo:{{ brand.size }}px">
