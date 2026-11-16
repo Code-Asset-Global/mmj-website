@@ -681,6 +681,7 @@ def a_participant_reject(pid):
 def a_participant_del(pid):
     p = _part(pid)
     if p["username"]: db().execute("DELETE FROM users WHERE username=? AND role='participant'", (p["username"],))
+    db().execute("DELETE FROM attendance WHERE pid=?", (pid,))   # also remove this person's attendance records
     db().execute("DELETE FROM participants WHERE id=?", (pid,)); db().commit()
     log("participant_deleted", p["email"]); return jsonify(ok=True)
 
