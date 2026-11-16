@@ -961,21 +961,30 @@ def name_matches(typed, registered):
     words = lambda x: {w for w in re.sub(r"[^a-z0-9 ]", " ", (x or "").lower()).split() if len(w) > 1}
     return bool(words(typed) & words(registered))
 
-@app.post("/api/checkin")  # students self check-in (shared ID: they identify with name + registered email + today's code)
+@app.post("/api/checkin")  # open self check-in: anyone with today's code can mark attendance; unknown emails are added as participants
 def api_checkin():
     if request.headers.get("X-Requested-With") != "fetch": return jsonify(error="Bad request"), 400
     d = request.get_json(silent=True) or {}; day = now()[:10]
     email = clean(d, "email", 160).lower(); typed = clean(d, "name", 120)
-    key = client_ip() + "|" + email  # per-email limit, so one wrong student on shared campus Wi-Fi cannot block the room
-    if throttled(key): return jsonify(error="Too many attempts. Try again in 10 minutes."), 429
+    ip_key = "ci|" + client_ip()                    # one device guessing codes with many different emails
+    key = client_ip() + "|" + email                 # per-email limit, so one wrong student on shared campus Wi-Fi cannot block the room
+    if throttled(key) or throttled(ip_key, 40): return jsonify(error="Too many attempts. Try again in 10 minutes."), 429
     if not typed: return jsonify(error="Please enter your name"), 400
-    cur = day_codes().get(day); p = db().execute("SELECT id,name FROM participants WHERE email=? AND status='approved'", (email,)).fetchone()
-    if not cur or not cur[1] or clean(d, "code", 8) != cur[0] or not p:
-        FAILS.setdefault(key, []).append(time.time())
-        return jsonify(error="Check-in is closed, today's code is wrong, or this email is not registered"), 400
-    if not name_matches(typed, p["name"]):
-        FAILS.setdefault(key, []).append(time.time())
-        return jsonify(error="This name does not match the name registered for this email. Enter your name as you registered it."), 400
+    if not EMAIL_RE.match(email): return jsonify(error="Please enter a valid email address"), 400
+    cur = day_codes().get(day)
+    if not cur or not cur[1]:
+        return jsonify(error="Check-in is closed right now. Please ask your faculty to open it."), 400
+    if clean(d, "code", 8) != cur[0]:
+        FAILS.setdefault(key, []).append(time.time()); FAILS.setdefault(ip_key, []).append(time.time())
+        return jsonify(error="Wrong code. Please enter today's 4-digit code announced by your faculty."), 400
+    # anyone may check in: use the existing participant for this email, or add one automatically
+    p = db().execute("SELECT id,name,status FROM participants WHERE email=? ORDER BY (status='approved') DESC, id DESC", (email,)).fetchone()
+    if p and p["status"] != "approved":
+        db().execute("UPDATE participants SET status='approved' WHERE id=?", (p["id"],))
+    if not p:
+        db().execute("INSERT INTO participants(name,email,phone,org,ref,status,created,note) VALUES(?,?,?,?,?,?,?,?)",
+                     (typed, email, "", "", "self-checkin", "approved", now(), "Added automatically via self check-in"))
+        p = db().execute("SELECT id,name FROM participants WHERE email=? ORDER BY id DESC", (email,)).fetchone()
     put_att(day, p["id"], "present", "self", email); db().commit(); log("checkin", "%s | %s" % (email, typed), user="-")
     return jsonify(ok=True, name=p["name"])
 
