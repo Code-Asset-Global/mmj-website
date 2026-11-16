@@ -739,7 +739,11 @@ def ann_del(aid):
 # ---------- assignments: published by admin / faculty, visible to everyone ----------
 @app.get("/api/assignments")
 @need()
-def asg_list(): return jsonify(jsetting("assignments", []))
+def asg_list():
+    # read straight from the database (no cache) so every participant always sees the latest published form link
+    r = db().execute("SELECT v FROM settings WHERE k='assignments'").fetchone()
+    try: return jsonify(json.loads(r["v"]) if r else [])
+    except Exception: return jsonify([])
 
 @app.post("/api/assignments")
 @need("admin", "faculty")
@@ -907,7 +911,7 @@ def fresh_code(taken):
 @need("admin", "faculty")
 def att_get():
     day = valid_day(request.args.get("day"))
-    m = {r["pid"]: dict(r) for r in db().execute("SELECT pid,status,via FROM attendance WHERE day=?", (day,)).fetchall()}
+    m = {r["pid"]: dict(r) for r in db().execute("SELECT pid,status,via,ts FROM attendance WHERE day=?", (day,)).fetchall()}
     rows = db().execute("SELECT id,name,email,org FROM participants WHERE status='approved' ORDER BY name").fetchall()
     codes = day_codes()
     # every class day gets its own fresh 4-digit code automatically (kept closed until faculty opens check-in)
@@ -918,9 +922,12 @@ def att_get():
     return jsonify(day=day, day_label=day_label(day), code=cur[0] if cur else None, open=bool(cur and cur[1]),
                    codes=[{"day": d, "label": day_label(d), "code": c, "open": o} for d, (c, o) in sorted(codes.items())],
                    rows=[{**dict(r), "status": m.get(r["id"], {}).get("status", ""),
-                          "via": m.get(r["id"], {}).get("via", "")} for r in rows])
+                          "via": m.get(r["id"], {}).get("via", ""),
+                          "ts": m.get(r["id"], {}).get("ts", "")} for r in rows])
 
 def put_att(day, pid, status, via, by):
+    old = db().execute("SELECT status FROM attendance WHERE day=? AND pid=?", (day, pid)).fetchone()
+    if old and old["status"] == status: return   # unchanged: keep the original check-in time and method
     db().execute("DELETE FROM attendance WHERE day=? AND pid=?", (day, pid))
     if status in ("present", "absent"):
         db().execute("INSERT INTO attendance(day,pid,status,via,marked_by,ts) VALUES(?,?,?,?,?,?)", (day, pid, status, via, by, now()))
@@ -994,10 +1001,10 @@ def api_checkin():
 def att_report():
     days = [r["day"] for r in db().execute("SELECT DISTINCT day FROM attendance ORDER BY day").fetchall()]
     pres = {}
-    for r in db().execute("SELECT pid,day FROM attendance WHERE status='present'").fetchall(): pres.setdefault(r["pid"], set()).add(r["day"])
+    for r in db().execute("SELECT pid,day,ts FROM attendance WHERE status='present'").fetchall(): pres.setdefault(r["pid"], {})[r["day"]] = str(r["ts"] or "")[11:16]
     rows = db().execute("SELECT id,name,email FROM participants WHERE status='approved' ORDER BY name").fetchall()
     return jsonify(days=days, rows=[{"name": r["name"], "email": r["email"], "present": len(pres.get(r["id"], ())),
-                                     "marks": {d: (d in pres.get(r["id"], ())) for d in days}} for r in rows])
+                                     "marks": {d: pres.get(r["id"], {}).get(d, "") for d in days}} for r in rows])
 
 # ---------- participants: shared-ID approval + bulk import ----------
 @app.post("/api/admin/participants/<int:pid>/approve_shared")
