@@ -171,7 +171,25 @@ body{background:var(--bg);color:var(--ink)}
 .auth-logos img.c{flex:none;height:76px;width:76px;object-fit:cover;background:#131722;border-radius:14px}
 @media(max-width:850px){.auth-logos .al img{height:58px}.auth-logos img.c{height:58px;width:58px}}
 .su-note{background:#eaf1f8;border:1px solid #ccdae8;border-radius:12px;padding:18px;font-size:13.5px;line-height:1.7;color:#35506b;margin-bottom:16px}.su-note strong{display:block;color:var(--navy);font-size:15px;margin-bottom:6px}
-</style><style>.clockbar{position:sticky;top:0;z-index:30;height:40px;display:flex;align-items:center;justify-content:center;gap:20px;padding:0 20px;background:linear-gradient(100deg,#173557,#224b82 60%,#3478bf);color:#fff;font-size:13px;letter-spacing:.3px;white-space:nowrap;overflow:hidden}.clockbar .ck{display:flex;align-items:center;gap:8px}.clockbar small{font-size:9px;letter-spacing:1.6px;color:#b9d0ea;font-weight:700}.clockbar b{font-size:14px;font-weight:700}.clockbar #ck-time{font-variant-numeric:tabular-nums;font-size:16px;color:#f1d596}.clockbar .live{width:8px;height:8px;border-radius:50%;background:#46d37f;animation:ckp 1.6s infinite}@keyframes ckp{70%{box-shadow:0 0 0 8px #46d37f00}0%{box-shadow:0 0 0 0 #46d37f99}100%{box-shadow:0 0 0 0 #46d37f00}}.clockbar .sep{width:1px;height:18px;background:#ffffff40}@media(max-width:700px){.clockbar{gap:10px;font-size:11px;height:36px}.clockbar .sep,.clockbar small{display:none}.clockbar b{font-size:12px}.clockbar #ck-time{font-size:13px}.clockbar .ck.st{display:none}}#auth{min-height:calc(100vh - 40px)}</style></head>
+/* ===== sign-in loading ===== */
+.btn-spin{display:none;width:16px;height:16px;border-radius:50%;border:2.5px solid #ffffff55;border-top-color:#fff;margin-right:10px;animation:lgspin .7s linear infinite;vertical-align:-3px}
+button.busy .btn-spin{display:inline-block}button.busy{opacity:.92;cursor:progress}
+@keyframes lgspin{to{transform:rotate(360deg)}}
+#opening{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;color:#fff;background:radial-gradient(800px 420px at 85% -10%,#4b8fd6 0,transparent 60%),linear-gradient(135deg,#0f2742,#173f6e 55%,#2a68ad);opacity:0;transition:opacity .25s ease}
+#opening[hidden]{display:none}#opening.on{opacity:1}
+.op-card{text-align:center;padding:24px;max-width:360px}
+.op-ring{position:relative;width:84px;height:84px;margin:0 auto 26px}
+.op-ring i{position:absolute;inset:0;border-radius:50%;border:3px solid transparent;border-top-color:#f3dba0;animation:lgspin 1.1s cubic-bezier(.5,.1,.5,.9) infinite}
+.op-ring i:nth-child(2){inset:11px;border-top-color:#fff;animation-duration:1.5s;animation-direction:reverse}
+.op-ring i:nth-child(3){inset:22px;border-top-color:#9cc6f0;animation-duration:.9s}
+#opening h3{color:#fff;font-size:24px;letter-spacing:-.4px;margin:0 0 8px}
+#opening p{color:#cfe3f8;font-size:14px;margin:0 0 22px}
+.op-bar{height:5px;border-radius:5px;background:#ffffff26;overflow:hidden;width:240px;margin:0 auto}
+.op-bar span{display:block;height:100%;width:40%;border-radius:5px;background:linear-gradient(90deg,#f3dba0,#d9b365);animation:opbar 1.2s ease-in-out infinite}
+@keyframes opbar{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
+@media(prefers-reduced-motion:reduce){.op-ring i,.op-bar span,.btn-spin{animation-duration:3s}}
+</style><style>.clockbar{position:sticky;top:0;z-index:30;height:40px;display:flex;align-items:center;justify-content:center;gap:20px;padding:0 20px;background:linear-gradient(100deg,#173557,#224b82 60%,#3478bf);color:#fff;font-size:13px;letter-spacing:.3px;white-space:nowrap;overflow:hidden}.clockbar .ck{display:flex;align-items:center;gap:8px}.clockbar small{font-size:9px;letter-spacing:1.6px;color:#b9d0ea;font-weight:700}.clockbar b{font-size:14px;font-weight:700}.clockbar #ck-time{font-variant-numeric:tabular-nums;font-size:16px;color:#f1d596}.clockbar .live{width:8px;height:8px;border-radius:50%;background:#46d37f;animation:ckp 1.6s infinite}@keyframes ckp{70%{box-shadow:0 0 0 8px #46d37f00}0%{box-shadow:0 0 0 0 #46d37f99}100%{box-shadow:0 0 0 0 #46d37f00}}.clockbar .sep{width:1px;height:18px;background:#ffffff40}@media(max-width:700px){.clockbar{gap:10px;font-size:11px;height:36px}.clockbar .sep,.clockbar small{display:none}.clockbar b{font-size:12px}.clockbar #ck-time{font-size:13px}.clockbar .ck.st{display:none}}#auth{min-height:calc(100vh - 40px)}</style><link rel="prefetch" href="/static/portal.js?v=16" as="script">
+</head>
 <body style="--logo:{{ brand.size }}px">
 <div class="clockbar" role="timer" aria-label="Current date and time"><span class="ck"><span class="live"></span><small>DAY</small><b id="ck-day">--</b></span><span class="sep"></span><span class="ck"><small>DATE</small><b id="ck-date">--</b></span><span class="sep"></span><span class="ck"><small>TIME (IST)</small><b id="ck-time">--:--:--</b></span><span class="sep"></span><span class="ck st"><small>STATUS</small><b>Updated live</b></span></div>
 <div id="auth">
@@ -200,7 +218,7 @@ body{background:var(--bg);color:var(--ink)}
       <label>Password<input id="p" type="password" autocomplete="current-password" required placeholder="Your password"></label>
       <label class="showpw"><input type="checkbox" onchange="document.getElementById('p').type=this.checked?'text':'password'"> Show password</label>
       <div class="auth-err" id="err" role="alert"></div>
-      <button class="button full" type="submit">Sign in</button>
+      <button class="button full" type="submit" id="go"><span class="btn-spin" aria-hidden="true"></span><span id="go-t">Sign in</span></button>
       <p class="fine">Login is shared only with participants who have paid the course fee, and with course faculty. Need a login? Contact the course team.</p>
     </form>
 
@@ -214,10 +232,17 @@ body{background:var(--bg);color:var(--ink)}
 <script>
 const $=id=>document.getElementById(id);
 $('login-form').onsubmit=async e=>{e.preventDefault();$('err').textContent='';
+  const b=$('go'),t=$('go-t');b.disabled=true;b.classList.add('busy');t.textContent='Signing in…';
+  const reset=()=>{b.disabled=false;b.classList.remove('busy');t.textContent='Sign in'};
   try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'fetch'},body:JSON.stringify({username:$('u').value,password:$('p').value})});
-    const d=await r.json().catch(()=>({}));d.ok?location=d.redirect:$('err').textContent=d.error||'Could not sign in'}
-  catch{$('err').textContent='Network problem. Please try again.'}};
+    const d=await r.json().catch(()=>({}));
+    if(d.ok){t.textContent='Signed in ✓';$('opening').hidden=false;requestAnimationFrame(()=>$('opening').classList.add('on'));setTimeout(()=>{location=d.redirect},60)}
+    else{$('err').textContent=d.error||'Could not sign in';reset()}}
+  catch{$('err').textContent='Network problem. Please try again.';reset()}};
+// warm the portal script while the person types, so the portal opens faster after sign-in
+['focus','input'].forEach(ev=>$('u').addEventListener(ev,()=>{if(window.__warm)return;window.__warm=1;fetch('/static/portal.js?v=16',{credentials:'same-origin'}).catch(()=>{})},{once:false}));
 </script><script>(function(){var tz='Asia/Kolkata',M=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],d=document.getElementById('ck-day'),a=document.getElementById('ck-date'),t=document.getElementById('ck-time');
 var fd=new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'numeric',year:'numeric',timeZone:tz});
 function tick(){var n=new Date(),p={};fd.formatToParts(n).forEach(function(x){p[x.type]=x.value});d.textContent=n.toLocaleDateString('en-IN',{weekday:'long',timeZone:tz});a.textContent=p.day+' '+M[Number(p.month)-1]+' '+p.year;t.textContent=n.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZone:tz}).toUpperCase()}
-tick();setInterval(tick,1000)})();</script><script>(function(){var t=document.querySelectorAll('[data-tab]'),f=document.getElementById('login-form'),u=document.getElementById('signup');t.forEach(function(b){b.onclick=function(){var up=b.dataset.tab==='up';t.forEach(function(x){x.setAttribute('aria-pressed',String(x===b))});f.hidden=up;u.hidden=!up}})})();</script></body></html>
+tick();setInterval(tick,1000)})();</script><script>(function(){var t=document.querySelectorAll('[data-tab]'),f=document.getElementById('login-form'),u=document.getElementById('signup');t.forEach(function(b){b.onclick=function(){var up=b.dataset.tab==='up';t.forEach(function(x){x.setAttribute('aria-pressed',String(x===b))});f.hidden=up;u.hidden=!up}})})();</script><div id="opening" hidden role="status" aria-live="polite"><div class="op-card"><div class="op-ring"><i></i><i></i><i></i></div><h3>Opening your portal…</h3><p>Getting your sessions, files and assignments ready</p><div class="op-bar"><span></span></div></div></div>
+</body></html>
