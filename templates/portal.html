@@ -189,6 +189,10 @@ body{background:var(--bg);color:var(--ink)}
 .brand>span:last-child{white-space:nowrap}
 @media(max-width:1150px){.brand{font-size:17px;gap:10px}.brand-symbol{width:40px;height:44px;flex:none}}
 @media(max-width:850px){.sidebar{width:min(290px,84vw);padding-left:20px;padding-right:20px}.brand{font-size:19px}}
+
+/* phone/tablet menu opens BELOW the header, so "Mind, Machine & Justice" is never hidden behind it */
+@media(max-width:850px){.sidebar{top:140px!important;z-index:40}}
+@media(max-width:700px){.sidebar{top:134px!important}}
 </style>
 </head>
 <body style="--logo:{{ brand.size }}px">
