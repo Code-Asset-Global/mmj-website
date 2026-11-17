@@ -372,7 +372,8 @@ def boot_json(u):
             return r.get_json() if getattr(r, "status_code", 200) == 200 else None
         except Exception: return None
     b = {"me": get("api_me"), "content": get("api_content"), "foundation": get("api_foundation"), "settings": get("api_settings"),
-         "files": get("api_files"), "ann": get("ann_list"), "custom": get("laws_list")}
+         "files": get("api_files"), "ann": get("ann_list"), "custom": get("laws_list"),
+         "feedback": get("fb_get"), "daynotes": get("dn_list")}
     if u["role"] == "admin": b["part"] = get("a_participants")
     return json.dumps(b, ensure_ascii=False).replace("<", "\\u003c")
 
@@ -773,6 +774,53 @@ def asg_del(aid):
     set_jsetting("assignments", [x for x in L if x.get("id") != aid]); log("assignment_deleted", it.get("title", "")); return jsonify(ok=True)
 
 
+# ---------- feedback form + day-by-day initiation notes (admin / faculty write, everyone reads) ----------
+def fresh_json(k, default):
+    """read straight from the database (no cache) so every participant sees the latest version at once"""
+    r = db().execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
+    try: return json.loads(r["v"]) if r else default
+    except Exception: return default
+
+@app.get("/api/feedback")
+@need()
+def fb_get(): return jsonify(fresh_json("feedback", {}))
+
+@app.post("/api/feedback")
+@need("admin", "faculty")
+def fb_save():
+    d = request.get_json(silent=True) or {}; url = str(d.get("url") or "").strip()
+    if not url:
+        set_setting("feedback", None); log("feedback_form_removed"); return jsonify(ok=True)
+    if not https_or_none(url): return jsonify(error="Please paste a valid https:// Google Form link"), 400
+    set_jsetting("feedback", {"url": url, "title": clean(d, "title", 160) or "Course feedback form", "note": str(d.get("note") or "").strip()[:1500],
+                              "updated": now(), "by": session["u"]})
+    log("feedback_form_saved"); return jsonify(ok=True)
+
+@app.get("/api/daynotes")
+@need()
+def dn_list(): return jsonify(fresh_json("daynotes", []))
+
+@app.post("/api/daynotes")
+@need("admin", "faculty")
+def dn_save():
+    d = request.get_json(silent=True) or {}
+    try: day = int(d.get("day"))
+    except Exception: day = 0
+    if not 1 <= day <= 7: return jsonify(error="Choose a day between 1 and 7"), 400
+    body = str(d.get("body") or "").strip()[:8000]
+    if not body: return jsonify(error="Please write the message"), 400
+    L = [x for x in fresh_json("daynotes", []) if x.get("day") != day]
+    L.append({"day": day, "title": clean(d, "title", 160), "body": body, "updated": now(), "by": session["u"]})
+    L.sort(key=lambda x: x["day"]); set_jsetting("daynotes", L); log("day_note_saved", "Day %d" % day); return jsonify(ok=True)
+
+@app.delete("/api/daynotes/<int:day>")
+@need("admin", "faculty")
+def dn_del(day):
+    L = fresh_json("daynotes", [])
+    if not any(x.get("day") == day for x in L): abort(404)
+    set_jsetting("daynotes", [x for x in L if x.get("day") != day]); log("day_note_deleted", "Day %d" % day); return jsonify(ok=True)
+
+
 # ---------- law tracker: entries and documents added by admin / faculty ----------
 LAW_REGIONS = ("Global", "India"); LAW_TYPES = ("Legislation", "Judicial decisions", "Policy frameworks")
 
@@ -1073,7 +1121,7 @@ def a_active(uid):
 @need("admin", "faculty")
 def a_logs():
     admin = me()["role"] == "admin"; since = now()[:10] + " 00:00:00"
-    SAFE = ("login", "download", "upload", "checkin", "announcement_posted", "assignment_published", "assignment_edited", "assignment_deleted")
+    SAFE = ("login", "download", "upload", "checkin", "announcement_posted", "assignment_published", "assignment_edited", "assignment_deleted", "feedback_form_saved", "day_note_saved")
     if admin: rows = db().execute("SELECT ts,username,action,detail,ip FROM logs ORDER BY id DESC LIMIT 200").fetchall()
     else:  # faculty see learning activity only, not account / password / security events
         rows = db().execute("SELECT ts,username,action,detail,ip FROM logs WHERE action IN (%s) ORDER BY id DESC LIMIT 200" % ",".join("?" * len(SAFE)), SAFE).fetchall()
