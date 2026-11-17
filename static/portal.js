@@ -1,7 +1,7 @@
 'use strict';
 let DATA, FOUNDATIONS;
 const STORE_KEY = 'mmj-html-offline-v1';
-const MAIN_TABS = [['overview','Overview'],['announcements','Announcements'],['sessions','Sessions & materials'],['primer','Participant primer'],['tracker','Law tracker'],['assignments','Assignment drafts'],['library','Course files'],['about','Course information']];
+const MAIN_TABS = [['overview','Overview'],['announcements','Announcements'],['sessions','Sessions & materials'],['primer','Participant primer'],['tracker','Law tracker'],['assignments','Assignment drafts'],['dayinit','Day initiation'],['feedback','Feedback'],['library','Course files'],['about','Course information']];
 const state = {view:'overview',session:null,day:'all',search:'',primer:'foundations',glossary:'',region:'Global',lawType:'Legislation',lawSearch:''};
 let saved = {progress:[],assignments:[]}, persistence = true, toastTimer, editId = null;
 try { const raw = localStorage.getItem(STORE_KEY); if (raw) { const value=JSON.parse(raw); if (Array.isArray(value.progress)) saved.progress=value.progress.filter(n=>Number.isInteger(n)&&n>=1&&n<=14); if (Array.isArray(value.assignments)) saved.assignments=value.assignments.filter(a=>a&&typeof a.id==='string'&&typeof a.title==='string'); } } catch { persistence=false; }
@@ -182,10 +182,133 @@ document.addEventListener('click',async ev=>{const el=ev.target.closest('[data-a
 document.addEventListener('submit',async ev=>{if(ev.target.id!=='p-add'||!isAdmin())return;ev.preventDefault();const f=ev.target,d=Object.fromEntries(new FormData(f));
   try{const r=await api('/api/admin/participants',{method:'POST',json:d});f.reset();await loadParts();CREDS={name:d.name,email:d.email,username:r.username,password:r.password};SAFE('creds').innerHTML=credsBox()}catch(err){notice(String(err))}});
 
-const VIEWS={announcements,dashboard,attendance,report,checkin,ai,participants,overview,sessions,primer,tracker,assignments,library,about,upload,users,activity,branding};
+/* ======================= v26: announcement count, Feedback form, Day initiation ======================= */
+(function(){const s=document.createElement('style');s.textContent=`
+.rich{font-size:15px;line-height:1.85;color:var(--ink);overflow-wrap:anywhere}
+.rich p{margin:0 0 14px}
+.rich h2,.rich h3,.rich h4{color:var(--navy);line-height:1.25;margin:22px 0 8px}
+.rich h2{font-size:22px}.rich h3{font-size:18px}.rich h4{font-size:14px;text-transform:uppercase;letter-spacing:.06em}
+.rich ul,.rich ol{margin:0 0 14px;padding-left:22px}.rich li{margin:4px 0}
+.rich blockquote{margin:0 0 14px;padding:10px 16px;border-left:4px solid var(--bright);background:var(--soft);border-radius:0 10px 10px 0;color:var(--navy)}
+.rich hr{border:0;border-top:1px solid var(--line);margin:20px 0}
+.rich strong{color:var(--navy)}.rich a{font-weight:600}.rich>:last-child{margin-bottom:0}
+.dn-card{position:relative;background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:28px 30px 26px 34px;box-shadow:0 8px 28px rgba(23,53,87,.07);overflow:hidden}
+.dn-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;background:linear-gradient(var(--bright),var(--blue))}
+.dn-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.dn-day{background:var(--blue);color:#fff;font-size:11px;font-weight:800;letter-spacing:.1em;border-radius:99px;padding:5px 12px}
+.dn-date{font-size:12px;color:var(--muted);font-weight:600}
+.dn-card h2{margin:0 0 14px;font-size:clamp(22px,3vw,30px);line-height:1.2;color:var(--navy)}
+.dn-foot{margin:18px 0 0}
+.dn-prev{box-shadow:none;background:#fbfdff}
+.dn-split{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+@media(max-width:900px){.dn-split{grid-template-columns:1fr}}
+.dn-tools{display:flex;gap:6px;flex-wrap:wrap}
+.dn-tools button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-size:13px;color:var(--navy);font-weight:700}
+.dn-tools button:hover{background:var(--soft)}
+.fb-hero{border-radius:22px;padding:34px;background:linear-gradient(125deg,#fff,#eaf0f6);border:1px solid var(--line);margin-bottom:24px}
+.fb-hero h2{margin:6px 0 12px;font-size:clamp(24px,3vw,32px);color:var(--navy)}
+`;document.head.appendChild(s)})();
+
+let FEEDBACK={}, DAYN=[], annSig='', dnSig='', fbSig='';
+
+/* small safe text formatter: # heading, **bold**, *italic*, - bullets, 1. numbers, > quote, --- line, [text](https://…) and bare https links */
+function rich(src){
+  const inl=t=>{let s=e(t);
+    s=s.replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    s=s.split(/(<a .*?<\/a>)/g).map((p,i)=>i%2?p:p.replace(/(^|[\s(])(https:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')).join('');
+    s=s.replace(/\*\*([^*]+?)\*\*/g,'<strong>$1</strong>');
+    s=s.replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g,'$1<em>$2</em>');
+    return s};
+  const out=[];let list=null,para=[];
+  const flushP=()=>{if(para.length){out.push('<p>'+para.map(inl).join('<br>')+'</p>');para=[]}};
+  const flushL=()=>{if(list){out.push(`<${list.t}>${list.i.map(x=>'<li>'+inl(x)+'</li>').join('')}</${list.t}>`);list=null}};
+  for(const raw of String(src||'').replace(/\r/g,'').split('\n')){
+    const ln=raw.trimEnd();let m;
+    if(!ln.trim()){flushP();flushL();continue}
+    if(m=/^\s*(#{1,3})\s+(.+)$/.exec(ln)){flushP();flushL();const lv=m[1].length+1;out.push(`<h${lv}>${inl(m[2])}</h${lv}>`)}
+    else if(/^\s*(-{3,}|\*{3,})\s*$/.test(ln)){flushP();flushL();out.push('<hr>')}
+    else if(m=/^\s*[-*•]\s+(.+)$/.exec(ln)){flushP();if(!list||list.t!=='ul'){flushL();list={t:'ul',i:[]}}list.i.push(m[1])}
+    else if(m=/^\s*\d+[.)]\s+(.+)$/.exec(ln)){flushP();if(!list||list.t!=='ol'){flushL();list={t:'ol',i:[]}}list.i.push(m[1])}
+    else if(m=/^\s*>\s?(.*)$/.exec(ln)){flushP();flushL();out.push('<blockquote>'+inl(m[1])+'</blockquote>')}
+    else{flushL();para.push(ln.trim())}
+  }
+  flushP();flushL();return out.join('')}
+
+function dayDate(n){try{const f=DATA.sessions.map(s=>s.date).sort()[0],[y,m,d]=f.split('-').map(Number);return new Date(Date.UTC(y,m-1,d+n-1)).toISOString().slice(0,10)}catch{return ''}}
+
+/* ---- Day initiation ---- */
+function dnCard(n,preview){const dd=dayDate(n.day);
+  return `<article class="dn-card ${preview?'dn-prev':''}"><div class="dn-head"><span class="dn-day">DAY ${n.day}</span>${dd?`<span class="dn-date">${e(date(dd))}</span>`:''}</div><h2>${e(n.title||('Day '+n.day+' initiation'))}</h2><div class="rich">${rich(n.body)||'<p class="fine">Your message will appear here exactly like this, as you type.</p>'}</div>${!preview&&n.updated?`<p class="fine dn-foot">Posted ${e(String(n.updated).slice(0,16))} IST${n.by?' · '+e(n.by):''}</p>`:''}${!preview&&isStaff()?`<div class="actions" style="margin-top:14px">${button('dn-edit','Edit',`data-id="${n.day}"`,'button secondary small')}${button('dn-del','Delete',`data-id="${n.day}"`,'button secondary small danger')}</div>`:''}</article>`}
+function dnEditor(){return `<section class="panel" style="margin-bottom:26px"><span class="overline">${isAdmin()?'ADMIN':'FACULTY'} · WRITE</span><h2>Write the day's initiation</h2><p class="muted" style="font-size:13px">Write freely. The preview shows exactly how participants will see it: headings, bold text, bullet points and links all look neat automatically.</p><form id="dn-form" class="assignment-form"><div class="form-row"><label>Day<select name="day">${[1,2,3,4,5,6,7].map(n=>`<option value="${n}" ${n===2?'selected':''}>Day ${n}${dayDate(n)?' · '+e(dayDate(n).slice(5).split('-').reverse().join('/')):''}</option>`).join('')}</select></label><label>Heading<input name="title" maxlength="160" placeholder="e.g. Welcome to Day 2"></label></div><div class="dn-tools" role="toolbar" aria-label="Formatting"><button type="button" data-action="dn-fmt" data-f="bold" title="Bold"><b>B</b></button><button type="button" data-action="dn-fmt" data-f="italic" title="Italic"><i>I</i></button><button type="button" data-action="dn-fmt" data-f="h" title="Heading">Heading</button><button type="button" data-action="dn-fmt" data-f="ul" title="Bullet list">• List</button><button type="button" data-action="dn-fmt" data-f="ol" title="Numbered list">1. List</button><button type="button" data-action="dn-fmt" data-f="quote" title="Highlighted note">❝ Note</button><button type="button" data-action="dn-fmt" data-f="link" title="Link">🔗 Link</button></div><div class="dn-split"><label>Message<textarea name="body" id="dn-body" rows="15" maxlength="8000" required placeholder="Good morning everyone!&#10;&#10;## Today's plan&#10;- 10:00 AM · Session 3&#10;- 2:00 PM · Session 4&#10;&#10;**Please keep your questions ready.**"></textarea></label><div><span class="fine" style="font-weight:700;letter-spacing:.08em">LIVE PREVIEW</span><div id="dn-preview" style="margin-top:6px">${dnCard({day:2,title:'',body:''},true)}</div></div></div><div class="actions"><button class="button" type="submit">Publish to participants</button>${button('dn-clear','Clear','type="button"')}</div></form></section>`}
+function dayinit(){
+  const sel=DAYN.find(x=>x.day===state.dnView)||DAYN[DAYN.length-1];
+  const chips=DAYN.length>1?`<div class="toolbar"><div class="chips">${DAYN.map(x=>`<button data-action="dn-day" data-value="${x.day}" aria-pressed="${sel&&sel.day===x.day}">Day ${x.day}</button>`).join('')}</div></div>`:'';
+  return `${heading('DAY BY DAY','Day initiation','A warm start and the plan for each day of the course.')}${isStaff()?dnEditor():''}${chips}${sel?dnCard(sel):'<div class="empty">No day initiation has been published yet. It will appear here as soon as the faculty post it.</div>'}`}
+function dnPreview(){const f=$('dn-form'),p=$('dn-preview');if(!f||!p)return;p.innerHTML=dnCard({day:Number(f.elements.day.value),title:f.elements.title.value.trim(),body:f.elements.body.value},true)}
+function dnFmt(kind){const ta=$('dn-body');if(!ta)return;const v=ta.value,s=ta.selectionStart,en=ta.selectionEnd,sel=v.slice(s,en);
+  const wrap=(a,b,ph)=>{const t=sel||ph;ta.value=v.slice(0,s)+a+t+b+v.slice(en);ta.selectionStart=s+a.length;ta.selectionEnd=s+a.length+t.length};
+  const lines=(pf,ph)=>{const ls=s>0?v.lastIndexOf('\n',s-1)+1:0,chunk=v.slice(ls,en)||ph,o=chunk.split('\n').map((l,i)=>pf(i)+l).join('\n');ta.value=v.slice(0,ls)+o+v.slice(en);ta.selectionStart=ls;ta.selectionEnd=ls+o.length};
+  if(kind==='bold')wrap('**','**','bold text');else if(kind==='italic')wrap('*','*','italic text');
+  else if(kind==='h')lines(()=>'## ','Heading');else if(kind==='ul')lines(()=>'- ','Point');
+  else if(kind==='ol')lines(i=>(i+1)+'. ','Point');else if(kind==='quote')lines(()=>'> ','Important note');
+  else if(kind==='link'){const u=(prompt('Paste the link (must start with https://)')||'').trim();if(!/^https:\/\/\S+$/.test(u)){if(u)notice('The link must start with https://');return}wrap('[','](' +u+')','link text')}
+  ta.focus();dnPreview()}
+
+/* ---- Feedback form ---- */
+function feedback(){const F=FEEDBACK||{},url=F.url&&safeURL(F.url)!=='#'?safeURL(F.url):'';
+  const card=`<section class="fb-hero"><span class="overline">YOUR VOICE MATTERS</span><h2>${e(F.title||'Course feedback form')}</h2>${F.note?`<div class="rich">${rich(F.note)}</div>`:'<p class="muted">Tell us what worked, what did not, and what you would like to see next.</p>'}<div class="actions" style="margin-top:18px">${url?`<a class="button" href="${e(url)}" target="_blank" rel="noopener noreferrer">Open feedback form ↗</a>`:'<span class="warn-pill">The feedback form will be shared here soon</span>'}</div>${url?'<p class="fine" style="margin-top:12px">Opens in a new tab · it takes only a couple of minutes</p>':''}</section>`;
+  const edit=isStaff()?`<section class="panel"><span class="overline">${isAdmin()?'ADMIN':'FACULTY'} · FEEDBACK FORM</span><h2>Publish the feedback form</h2><p class="muted" style="font-size:13px">Create the form in Google Forms, press <b>Send</b>, open the link tab, copy the link and paste it below. Participants see it here straight away.</p><form id="fb-form" class="assignment-form"><label>Title<input name="title" maxlength="160" value="${e(F.title||'')}" placeholder="e.g. Mind, Machine &amp; Justice · Feedback"></label><label>Message to participants <span class="fine">(optional · **bold**, - bullets and links work)</span><textarea name="note" rows="5" maxlength="1500" placeholder="Thank you for being with us. Please share your honest feedback.">${e(F.note||'')}</textarea></label><label>Google Form link<input name="url" type="url" required placeholder="https://forms.gle/…" value="${e(F.url||'')}"></label><div class="actions"><button class="button" type="submit">Save &amp; publish</button>${url?button('fb-remove','Remove form','type="button"','button secondary danger'):''}</div></form></section>`:'';
+  return `${heading('SHARE YOUR EXPERIENCE','Feedback','Your feedback helps us improve every edition of the course.')}${card}${edit}`}
+
+/* ---- announcement count in the menu, live for everyone ---- */
+function navBadge(view,n){const b=document.querySelector('#navigation [data-view="'+view+'"]');if(!b)return;const old=b.querySelector('.nav-count');if(old)old.remove();if(n>0)b.insertAdjacentHTML('beforeend',`<span class="nav-count">${n}</span>`)}
+const typingInForm=()=>{const a=document.activeElement;return !!(a&&a.closest&&a.closest('form'))};
+let syncBusy=false;
+async function liveSync(force){
+  if(!user||syncBusy||(document.hidden&&!force))return;syncBusy=true;
+  try{
+    const g=u=>api(u,{cache:'no-store'}).catch(()=>null);
+    const [a,d,f]=await Promise.all([g('/api/announcements'),g('/api/daynotes'),g('/api/feedback')]);
+    let redraw=false;
+    if(Array.isArray(a)&&JSON.stringify(a)!==annSig){const old=new Set(ANN.map(x=>x.id)),fresh=a.filter(x=>!old.has(x.id));annSig=JSON.stringify(a);ANN=a;navBadge('announcements',ANN.length);
+      if(state.view==='announcements')redraw=true;if(!isStaff()&&fresh.length)notice('New announcement: '+fresh[0].title)}
+    if(Array.isArray(d)&&JSON.stringify(d)!==dnSig){const old=new Map(DAYN.map(x=>[x.day,x.updated])),fresh=d.filter(x=>old.get(x.day)!==x.updated);dnSig=JSON.stringify(d);DAYN=d;
+      if(state.view==='dayinit')redraw=true;if(!isStaff()&&fresh.length)notice('Day '+fresh[fresh.length-1].day+' initiation is now up.')}
+    if(f&&typeof f==='object'&&!Array.isArray(f)&&JSON.stringify(f)!==fbSig){const had=!!(FEEDBACK&&FEEDBACK.url);fbSig=JSON.stringify(f);FEEDBACK=f;
+      if(state.view==='feedback')redraw=true;if(!isStaff()&&f.url&&!had)notice('The feedback form is now open.')}
+    if(redraw&&!typingInForm())render();
+  }finally{syncBusy=false}}
+setInterval(()=>liveSync(false),15000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)liveSync(true)});
+addEventListener('online',()=>liveSync(true));
+
+/* ---- handlers ---- */
+document.addEventListener('click',async ev=>{const el=ev.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
+  if(!/^(dn-|fb-)/.test(a))return;
+  try{
+    if(a==='dn-day'){state.dnView=Number(el.dataset.value);render()}
+    else if(a==='dn-fmt'&&isStaff())dnFmt(el.dataset.f);
+    else if(a==='dn-clear'&&isStaff()){const f=$('dn-form');f.reset();dnPreview()}
+    else if(a==='dn-edit'&&isStaff()){const n=DAYN.find(x=>x.day===Number(el.dataset.id)),f=$('dn-form');if(n&&f){f.elements.day.value=n.day;f.elements.title.value=n.title||'';f.elements.body.value=n.body||'';dnPreview();f.scrollIntoView({behavior:'smooth',block:'center'});notice('Editing Day '+n.day+'. Press Publish when done.')}}
+    else if(a==='dn-del'&&isStaff()){const day=Number(el.dataset.id);if(!confirm('Delete the Day '+day+' initiation? Participants will no longer see it.'))return;await api('/api/daynotes/'+day,{method:'DELETE'});DAYN=await api('/api/daynotes',{cache:'no-store'});dnSig=JSON.stringify(DAYN);state.dnView=null;render();notice('Day '+day+' initiation deleted.')}
+    else if(a==='fb-remove'&&isStaff()){if(!confirm('Remove the feedback form link? Participants will no longer see it.'))return;await api('/api/feedback',{method:'POST',json:{url:''}});FEEDBACK=await api('/api/feedback',{cache:'no-store'});fbSig=JSON.stringify(FEEDBACK);render();notice('Feedback form removed.')}
+  }catch(err){notice(String(err))}});
+document.addEventListener('input',ev=>{if(ev.target.closest&&ev.target.closest('#dn-form'))dnPreview()});
+document.addEventListener('change',ev=>{const t=ev.target;if(!t.matches||!t.matches('#dn-form [name=day]'))return;const f=t.form,n=DAYN.find(x=>x.day===Number(t.value));if(n){f.elements.title.value=n.title||'';f.elements.body.value=n.body||''}dnPreview()});
+document.addEventListener('submit',async ev=>{const f=ev.target;
+  try{
+    if(f.id==='dn-form'&&isStaff()){ev.preventDefault();const d=Object.fromEntries(new FormData(f));
+      await withBusy(f.querySelector('button[type=submit]'),'Publishing…',()=>api('/api/daynotes',{method:'POST',json:d}));
+      DAYN=await api('/api/daynotes',{cache:'no-store'});dnSig=JSON.stringify(DAYN);state.dnView=Number(d.day);render();notice('Day '+d.day+' initiation published. Participants can see it now.')}
+    else if(f.id==='fb-form'&&isStaff()){ev.preventDefault();const d=Object.fromEntries(new FormData(f));
+      await withBusy(f.querySelector('button[type=submit]'),'Saving…',()=>api('/api/feedback',{method:'POST',json:d}));
+      FEEDBACK=await api('/api/feedback',{cache:'no-store'});fbSig=JSON.stringify(FEEDBACK);render();notice('Feedback form published. Participants can see it now.')}
+  }catch(err){notice(String(err))}});
+
+const VIEWS={announcements,dayinit,feedback,dashboard,attendance,report,checkin,ai,participants,overview,sessions,primer,tracker,assignments,library,about,upload,users,activity,branding};
 function render(){const tabs=allTabs(),st=staffTabs();
   $('userchip').innerHTML=`<span class="who">${e(user.name)} · ${ROLE_LABEL[user.role]}</span>${button('logout','Sign out','','button secondary small')}`;
-  const mk=(t,i)=>`<button data-action="navigate" data-view="${t[0]}" ${state.view===t[0]?'aria-current="page"':''}><span class="nav-num">${String(i+1).padStart(2,'0')}</span>${t[1]}${t[0]==='sessions'?'<span class="nav-count">14</span>':''}${t[0]==='participants'&&PENDING?`<span class="nav-count">${PENDING}</span>`:''}</button>`;
+  const mk=(t,i)=>`<button data-action="navigate" data-view="${t[0]}" ${state.view===t[0]?'aria-current="page"':''}><span class="nav-num">${String(i+1).padStart(2,'0')}</span>${t[1]}${t[0]==='sessions'?'<span class="nav-count">14</span>':''}${t[0]==='announcements'&&ANN.length?`<span class="nav-count">${ANN.length}</span>`:''}${t[0]==='participants'&&PENDING?`<span class="nav-count">${PENDING}</span>`:''}</button>`;
   $('navigation').innerHTML=MAIN_TABS.map(mk).join('')+(st.length?`<div class="nav-group admin">${isAdmin()?'ADMIN':'FACULTY'}</div>`+st.map((t,i)=>mk(t,MAIN_TABS.length+i)).join(''):'');
   $('breadcrumb').textContent='COURSE WORKSPACE / '+(tabs.find(t=>t[0]===state.view)?.[1]||'Overview').toUpperCase();
   $('main').innerHTML=(VIEWS[state.view]||overview)();
@@ -280,8 +403,8 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
 (async function boot(){
   try{const B=window.__BOOT__||{};const me=B.me||await api('/api/me');if(!me.user){location='/login';return}
     user=me.user;if(!isStaff())MAIN_TABS.push(['checkin','Mark attendance']);CFG.categories=me.categories;CFG.max_mb=me.max_mb;
-    const [c,fd,st,files,ann,custom,asg]=await Promise.all([B.content||api('/api/content'),B.foundation||api('/api/foundation'),B.settings||api('/api/settings'),B.files||api('/api/files'),B.ann||api('/api/announcements').catch(()=>[]),B.custom||api('/api/laws/custom').catch(()=>[]),B.assignments||api('/api/assignments').catch(()=>[])]);
-    DATA=c;BASE_LAWS=(c.laws||[]).slice();mergeLaws(custom);ANN=ann;FOUNDATIONS=fd;Object.assign(CFG,st);FILES=files;ASSIGN=Array.isArray(asg)?asg:[];applyOverrides();if(isAdmin()){try{PART=B.part||await api('/api/admin/participants');PENDING=PART.filter(p=>p.status==='pending').length}catch{}}
+    const [c,fd,st,files,ann,custom,asg,fb,dn]=await Promise.all([B.content||api('/api/content'),B.foundation||api('/api/foundation'),B.settings||api('/api/settings'),B.files||api('/api/files'),B.ann||api('/api/announcements').catch(()=>[]),B.custom||api('/api/laws/custom').catch(()=>[]),B.assignments||api('/api/assignments').catch(()=>[]),B.feedback||api('/api/feedback').catch(()=>({})),B.daynotes||api('/api/daynotes').catch(()=>[])]);
+    DATA=c;BASE_LAWS=(c.laws||[]).slice();mergeLaws(custom);ANN=ann;FOUNDATIONS=fd;Object.assign(CFG,st);FILES=files;ASSIGN=Array.isArray(asg)?asg:[];FEEDBACK=fb||{};DAYN=Array.isArray(dn)?dn:[];annSig=JSON.stringify(ANN);dnSig=JSON.stringify(DAYN);fbSig=JSON.stringify(FEEDBACK);applyOverrides();if(isAdmin()){try{PART=B.part||await api('/api/admin/participants');PENDING=PART.filter(p=>p.status==='pending').length}catch{}}
     window.addEventListener('hashchange',readHash);readHash()}
   catch(err){$('main').innerHTML=`<div class="empty">Could not load the portal. ${e(err)}</div>`}
 })();
