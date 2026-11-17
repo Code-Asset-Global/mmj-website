@@ -208,6 +208,15 @@ document.addEventListener('submit',async ev=>{if(ev.target.id!=='p-add'||!isAdmi
 .dn-tools button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-size:13px;color:var(--navy);font-weight:700}
 .dn-tools button:hover{background:var(--soft)}
 .fb-hero{border-radius:22px;padding:34px;background:linear-gradient(125deg,#fff,#eaf0f6);border:1px solid var(--line);margin-bottom:24px}
+#pop-wrap{position:fixed;top:58px;right:18px;z-index:80;display:flex;flex-direction:column;gap:12px;width:min(380px,calc(100vw - 28px));pointer-events:none}
+.pop-card{pointer-events:auto;position:relative;display:grid;gap:6px;background:#fff;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:14px;padding:16px 46px 14px 18px;box-shadow:0 14px 40px rgba(23,53,87,.22);animation:popin .35s ease}
+.pop-card.out{opacity:0;transform:translateX(30px);transition:.25s}
+.pop-card strong{color:var(--navy);font-size:16px;line-height:1.3}
+.pop-card p{margin:0;font-size:13px;color:var(--muted);line-height:1.6}
+.pop-card .actions{margin:4px 0 0}
+.pop-x{position:absolute;top:8px;right:8px;width:30px;height:30px;border:0;border-radius:50%;background:var(--soft);color:var(--navy);font-size:14px;font-weight:700}
+.pop-x:hover{background:#d3e1f1}
+@keyframes popin{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
 .fb-hero h2{margin:6px 0 12px;font-size:clamp(24px,3vw,32px);color:var(--navy)}
 `;document.head.appendChild(s)})();
 
@@ -274,7 +283,7 @@ async function liveSync(force){
     const [a,d,f]=await Promise.all([g('/api/announcements'),g('/api/daynotes'),g('/api/feedback')]);
     let redraw=false;
     if(Array.isArray(a)&&JSON.stringify(a)!==annSig){const old=new Set(ANN.map(x=>x.id)),fresh=a.filter(x=>!old.has(x.id));annSig=JSON.stringify(a);ANN=a;navBadge('announcements',ANN.length);
-      if(state.view==='announcements')redraw=true;if(!isStaff()&&fresh.length)notice('New announcement: '+fresh[0].title)}
+      if(state.view==='announcements')redraw=true;annPopup(fresh)}
     if(Array.isArray(d)&&JSON.stringify(d)!==dnSig){const old=new Map(DAYN.map(x=>[x.day,x.updated])),fresh=d.filter(x=>old.get(x.day)!==x.updated);dnSig=JSON.stringify(d);DAYN=d;
       if(state.view==='dayinit')redraw=true;if(!isStaff()&&fresh.length)notice('Day '+fresh[fresh.length-1].day+' initiation is now up.')}
     if(f&&typeof f==='object'&&!Array.isArray(f)&&JSON.stringify(f)!==fbSig){const had=!!(FEEDBACK&&FEEDBACK.url);fbSig=JSON.stringify(f);FEEDBACK=f;
@@ -308,7 +317,22 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
       FEEDBACK=await api('/api/feedback',{cache:'no-store'});fbSig=JSON.stringify(FEEDBACK);render();notice('Feedback form published. Participants can see it now.')}
   }catch(err){notice(String(err))}});
 
-const VIEWS={announcements,dayinit,feedback,dashboard,attendance,report,checkin,ai,participants,overview,sessions,primer,tracker,assignments,library,about,upload,users,activity,branding};
+/* ---- popup for a new announcement: shows once, closes by itself, can be closed with the X ---- */
+const ANN_SEEN_KEY='mmj-ann-seen';let annSeenMem=null,popWrap=null;
+function annSeen(){if(annSeenMem)return annSeenMem;let a=[];try{a=JSON.parse(localStorage.getItem(ANN_SEEN_KEY)||'[]')}catch(_){}annSeenMem=new Set(Array.isArray(a)?a:[]);return annSeenMem}
+function annMarkSeen(ids){const s=annSeen();ids.forEach(i=>s.add(i));try{localStorage.setItem(ANN_SEEN_KEY,JSON.stringify([...s].slice(-300)))}catch(_){}}
+function popHost(){if(!popWrap){popWrap=document.createElement('div');popWrap.id='pop-wrap';popWrap.setAttribute('role','status');popWrap.setAttribute('aria-live','polite');document.body.appendChild(popWrap)}return popWrap}
+function showAnnPop(a){const card=document.createElement('div');card.className='pop-card';const full=String(a.body||'').replace(/\s+/g,' ').trim(),snip=full.slice(0,140);
+  card.innerHTML=`<button type="button" class="pop-x" aria-label="Close">✕</button><span class="overline">📢 NEW ANNOUNCEMENT</span><strong>${e(a.title)}</strong>${snip?`<p>${e(snip)}${full.length>140?'…':''}</p>`:''}<div class="actions"><button type="button" class="button small pop-view">View</button></div>`;
+  let timer;const close=()=>{clearTimeout(timer);card.classList.add('out');setTimeout(()=>card.remove(),260)},arm=ms=>{clearTimeout(timer);timer=setTimeout(close,ms)};
+  card.querySelector('.pop-x').onclick=close;card.querySelector('.pop-view').onclick=()=>{close();go('announcements')};
+  card.addEventListener('mouseenter',()=>clearTimeout(timer));card.addEventListener('mouseleave',()=>arm(4000));
+  popHost().appendChild(card);arm(12000)}
+function annPopup(items){items=(items||[]).filter(a=>!annSeen().has(a.id)).slice(0,3);if(!items.length)return;annMarkSeen(items.map(a=>a.id));items.forEach(showAnnPop)}
+function annPopupOnLoad(){const recent=ANN.filter(a=>{const t=Date.parse(String(a.created).replace(' ','T')+'+05:30');return !isNaN(t)&&Date.now()-t<864e5});annPopup(recent);annMarkSeen(ANN.map(a=>a.id))}
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape')document.querySelectorAll('.pop-card .pop-x').forEach(b=>b.click())});
+
+const VIEWS={announcements,dayinit,feedback,dashboard,attendance,report,checkin,participants,overview,sessions,primer,tracker,assignments,library,about,upload,users,activity,branding};
 function render(){const tabs=allTabs(),st=staffTabs();
   $('userchip').innerHTML=`<span class="who">${e(user.name)} · ${ROLE_LABEL[user.role]}</span>${button('logout','Sign out','','button secondary small')}`;
   const mk=(t,i)=>`<button data-action="navigate" data-view="${t[0]}" ${state.view===t[0]?'aria-current="page"':''}><span class="nav-num">${String(i+1).padStart(2,'0')}</span>${t[1]}${t[0]==='sessions'?'<span class="nav-count">14</span>':''}${t[0]==='announcements'&&ANN.length?`<span class="nav-count">${ANN.length}</span>`:''}${t[0]==='participants'&&PENDING?`<span class="nav-count">${PENDING}</span>`:''}</button>`;
@@ -325,7 +349,7 @@ document.addEventListener('click',async ev=>{const el=ev.target.closest('[data-a
   else if(a==='edit-session'&&isAdmin()){state.editSession=state.editSession===Number(el.dataset.id)?null:Number(el.dataset.id);render()}
   else if(a==='reset-session'&&isAdmin()){if(!confirm('Restore the original text of this session?'))return;await api('/api/admin/session/'+el.dataset.id,{method:'DELETE'});CFG.overrides=(await api('/api/settings')).overrides;applyOverrides();state.editSession=null;render();notice('Original text restored.')}
   else if(a==='del-law'&&isStaff()){if(!confirm('Delete this entry from the law tracker?'))return;await api('/api/laws/custom/'+el.dataset.id,{method:'DELETE'});mergeLaws(await api('/api/laws/custom'));render();notice('Entry deleted.')}
-  else if(a==='del-ann'&&isStaff()){if(!confirm('Delete this announcement?'))return;await api('/api/announcements/'+el.dataset.id,{method:'DELETE'});ANN=await api('/api/announcements');render();notice('Announcement deleted.')}
+  else if(a==='del-ann'&&isStaff()){if(!confirm('Delete this announcement?'))return;await api('/api/announcements/'+el.dataset.id,{method:'DELETE'});ANN=await api('/api/announcements');annSig=JSON.stringify(ANN);render();notice('Announcement deleted.')}
   else if(a==='del-link'&&isStaff()){if(!confirm('Remove this link?'))return;await api(`/api/session/${el.dataset.id}/links/${el.dataset.i}`,{method:'DELETE'});CFG.links=(await api('/api/settings')).links;render();notice('Link removed.')}
   else if(a==='del-file'){const f=FILES.find(x=>x.id===Number(el.dataset.id));if(!f||!confirm('Delete “'+f.title+'” permanently?'))return;await api('/api/files/'+f.id,{method:'DELETE'});FILES=await api('/api/files');render();notice('File deleted.')}
   else if(a==='set-pw'){const id=el.dataset.id,box=$('pw'+id);await api(`/api/admin/users/${id}/password`,{method:'POST',json:{password:box.value}});box.value='';notice('Password updated.')}
@@ -350,7 +374,7 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
   else if(f.id==='law-form'&&isStaff()){ev.preventDefault();const fd=new FormData(f),file=fd.get('file');if(file&&!file.size)fd.delete('file');if(file&&file.size>CFG.max_mb*1048576){notice(file.name+' is larger than '+CFG.max_mb+' MB.');return}
     notice('Adding to the law tracker…');await api('/api/laws/custom',{method:'POST',body:fd});state.region=fd.get('region');state.lawType=fd.get('type');state.lawSearch='';mergeLaws(await api('/api/laws/custom'));render();notice('Added to the law tracker. Participants can see it now.')}
   else if(f.id==='ann-form'&&isStaff()){ev.preventDefault();const fd=new FormData(f),file=fd.get('file');if(file&&!file.size)fd.delete('file');if(file&&file.size>CFG.max_mb*1048576){notice(file.name+' is larger than '+CFG.max_mb+' MB.');return}
-    notice('Posting…');await api('/api/announcements',{method:'POST',body:fd});ANN=await api('/api/announcements');render();notice('Announcement posted.')}
+    notice('Posting…');await api('/api/announcements',{method:'POST',body:fd});ANN=await api('/api/announcements');annSig=JSON.stringify(ANN);render();notice('Announcement posted. Participants see it within seconds.')}
   else if(f.id==='link-form'&&isStaff()){ev.preventDefault();const n=f.dataset.id||f.session.value;if(!n){notice('Choose a session.');return}await api(`/api/session/${n}/links`,{method:'POST',json:{label:f.label.value,url:f.url.value.trim()}});CFG.links=(await api('/api/settings')).links;render();notice('Link added for Session '+n+'.')}
   else if(f.id==='session-form'&&isAdmin()){ev.preventDefault();const n=f.dataset.id,d=Object.fromEntries(new FormData(f));await api('/api/admin/session/'+n,{method:'POST',json:d});CFG.overrides=(await api('/api/settings')).overrides;applyOverrides();state.editSession=null;render();notice('Session updated.')}
   else if(f.id==='formurl-form'&&isStaff()){ev.preventDefault();const u=f.url.value.trim();await api('/api/admin/formurl',{method:'POST',json:{url:u}});CFG.formUrl=u;render();notice('Google Form link saved.')}
@@ -381,7 +405,6 @@ async function loadAtt(){const my=++attSeq;const d=await api('/api/attendance?da
 function report(){return `${heading(isAdmin()?'ADMIN · ATTENDANCE':'FACULTY · ATTENDANCE','Attendance report','Days present for every approved participant.','<div class="actions"><button class="button" data-action="rep-xlsx">Export Excel (.xlsx)</button><button class="button secondary" data-action="rep-csv">Export CSV</button></div>')}<div id="pane-body"><div class="empty"><span class="mspin"></span> Loading…</div></div>`}
 async function loadRep(){const d=REP=await api('/api/attendance/report');d.rows=repSort(d);PANE().innerHTML=`<p class="muted">${d.days.length} class day${d.days.length===1?'':'s'} recorded</p><div class="table-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Email</th><th>Present</th>${d.days.map(x=>`<th>${e(x.slice(5))}</th>`).join('')}</tr></thead><tbody>${d.rows.map(r=>`<tr><td><b>${e(r.name)}</b></td><td class="em">${e(r.email)}</td><td><b>${r.present}/${d.days.length}</b></td>${d.days.map(x=>`<td>${r.marks[x]?'<span class="ci-ok">✓'+(repTime(r.marks[x])!=null?' <small class="ci-t">'+e(String(r.marks[x]).replace(/^P\s*/i,''))+'</small>':'')+'</span>':'–'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
 function checkin(){return `${heading('DAILY ATTENDANCE','Mark attendance','Enter your name, your email and the 4-digit code your faculty gives for today.')}<section class="panel" style="max-width:520px"><form id="checkin-form" class="assignment-form"><label>Your name<input name="name" required maxlength="120" autocomplete="name" placeholder="Your full name"></label><label>Email<input name="email" type="email" required autocomplete="email" placeholder="you@example.com"></label><label>Today's code<input name="code" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required autocomplete="off" placeholder="0000"></label><button class="button" type="submit">Mark me present</button><p class="fine" id="ci-msg">The code changes every class day.</p></form></section>`}
-function ai(){return `${heading('POWERED BY GROQ','AI Study Assistant','Ask about topics from the course. A learning aid, not legal advice.')}<div class="chat" id="chat"><div class="m">Hello! Ask me anything about AI, law and justice from the course.</div></div><form id="ai-form" class="actions"><input class="search" style="flex:1" name="q" placeholder="Type your question" autocomplete="off"><button class="button" type="submit">Send</button></form>`}
 document.addEventListener('click',async ev=>{const el=ev.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
   try{
   if(a==='att-mark'){const c=el.parentElement;c.querySelectorAll('button').forEach(b=>b.className='button small secondary');el.className='button small on'+(el.dataset.s==='absent'?' a':'')}
@@ -400,7 +423,7 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
   if(f.id==='user-form'&&isAdmin()){ev.preventDefault();const r=await api('/api/admin/users',{method:'POST',json:Object.fromEntries(new FormData(f))});f.reset();SAFE('newid').innerHTML=`<div class="info" style="margin-top:16px">New ID created. Copy it now, the password is not shown again:<br><b>User ID:</b> ${e(r.username)} &nbsp; <b>Password:</b> ${e(r.password)}</div>`;loadUsers()}
   else if(f.id==='code-form'&&isStaff()){ev.preventDefault();const prev={open:ATT.open,code:ATT.code};const code=f.code.value.trim();patchCode({open:true,code},true);notice('Check-in is open for '+attDay+'. Code: '+code);api('/api/attendance/checkin_code',{method:'POST',json:{day:attDay,open:true,code}}).then(r=>{if(r&&r.code&&r.code!==code)patchCode({open:true,code:r.code})}).catch(err=>{patchCode(prev);notice('Could not open check-in: '+err)})}
   else if(f.id==='checkin-form'){ev.preventDefault();const m=$('ci-msg');try{const r=await withBusy(f.querySelector('button[type=submit]'),'Marking…',()=>api('/api/checkin',{method:'POST',json:Object.fromEntries(new FormData(f))}));m.style.color='#1b7a43';m.textContent='Thank you, '+r.name+'. You are marked present.';f.reset()}catch(err){m.style.color='#b3372f';m.textContent=String(err)}}
-  else if(f.id==='ai-form'){ev.preventDefault();const q=f.q.value.trim();if(!q)return;f.q.value='';const c=$('chat'),add=(t,k)=>{const d=document.createElement('div');d.className='m '+k;d.textContent=t;c.appendChild(d);c.scrollTop=1e9};add(q,'u');AIH.push({role:'user',content:q});try{const r=await api('/api/ai',{method:'POST',json:{messages:AIH}});AIH.push({role:'assistant',content:r.reply});add(r.reply,'')}catch(err){add(String(err),'err')}}
+  
   }catch(err){notice(String(err))}});
 
 (async function boot(){
@@ -408,7 +431,7 @@ document.addEventListener('submit',async ev=>{const f=ev.target;
     user=me.user;if(!isStaff())MAIN_TABS.push(['checkin','Mark attendance']);CFG.categories=me.categories;CFG.max_mb=me.max_mb;
     const [c,fd,st,files,ann,custom,asg,fb,dn]=await Promise.all([B.content||api('/api/content'),B.foundation||api('/api/foundation'),B.settings||api('/api/settings'),B.files||api('/api/files'),B.ann||api('/api/announcements').catch(()=>[]),B.custom||api('/api/laws/custom').catch(()=>[]),B.assignments||api('/api/assignments').catch(()=>[]),B.feedback||api('/api/feedback').catch(()=>({})),B.daynotes||api('/api/daynotes').catch(()=>[])]);
     DATA=c;BASE_LAWS=(c.laws||[]).slice();mergeLaws(custom);ANN=ann;FOUNDATIONS=fd;Object.assign(CFG,st);FILES=files;ASSIGN=Array.isArray(asg)?asg:[];FEEDBACK=fb||{};DAYN=Array.isArray(dn)?dn:[];annSig=JSON.stringify(ANN);dnSig=JSON.stringify(DAYN);fbSig=JSON.stringify(FEEDBACK);applyOverrides();if(isAdmin()){try{PART=B.part||await api('/api/admin/participants');PENDING=PART.filter(p=>p.status==='pending').length}catch{}}
-    window.addEventListener('hashchange',readHash);readHash()}
+    window.addEventListener('hashchange',readHash);readHash();annPopupOnLoad()}
   catch(err){$('main').innerHTML=`<div class="empty">Could not load the portal. ${e(err)}</div>`}
 })();
 
